@@ -3,7 +3,7 @@ import { View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { Button, Ring, T } from '@/components/ui';
-import { MONTH_SHORT, WEEKDAY_LONG, dayPlan, parseISODate } from '@/domain/budget';
+import { MONTH_SHORT, WEEKDAY_LONG, dayPlan, withJoinStart, parseISODate } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import { ObScaffold } from '@/features/onboarding/kit';
 import { actions, useStore } from '@/store';
@@ -18,7 +18,7 @@ const TIPS = [
 export default function Done() {
   const profile = useStore((s) => s.profile);
   const entries = useStore((s) => s.entries);
-  const plan = dayPlan(profile, entries);
+  const plan = dayPlan(withJoinStart(profile), entries);
   const first = profile.name.trim().split(/\s+/)[0];
   const d = parseISODate(plan.date);
   const toPayday = plan.daysLeft;

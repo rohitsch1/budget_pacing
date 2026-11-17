@@ -122,4 +122,24 @@ export const CASES: ParserCase[] = [
     lines: ['CRED', 'payment successful', '₹2,450', 'paid to Decathlon Sports', 'HDFC Bank Credit Card ••7788', 'available limit ₹84,550', '13 Nov 2026, 6:20 pm', 'UPI ref: 631718181818'],
     expect: { amount: 2450, direction: 'out', app: 'CRED', payee: 'Decathlon Sports', methodTag: 'Credit' },
   },
+  {
+    name: 'Real emulator OCR: ₹ read as 7 (PhonePe)',
+    lines: ['PhonePe', 'Payment Successful', '7380', 'Paid to Third Wave Coffee', '17 Nov 2026, 11:40 am', 'UPI Ref No: 631922847710', 'Debited from HDFC Bank XX4421'],
+    expect: { amount: 380, currency: 'INR', direction: 'out', payee: 'Third Wave Coffee', app: 'PhonePe', methodTag: 'Bank' },
+  },
+  {
+    name: 'Real emulator OCR: ₹ dropped (Google Pay received)',
+    lines: ['Google Pay', 'Received from Arjun M', '1,200', 'Completed', 'dinner split', '17 Nov 2026, 9:15 pm', 'UPI transaction ID: 731122849901'],
+    expect: { amount: 1200, currency: 'INR', direction: 'in', app: 'Google Pay', note: 'dinner split' },
+  },
+  {
+    name: '₹ read as a stray glyph',
+    lines: ['Paytm', 'Paid Successfully to', 'Chai Point', '%240', '15 Nov 2026, 5:10 pm', 'UPI Ref No: 631811112222'],
+    expect: { amount: 240, direction: 'out', payee: 'Chai Point' },
+  },
+  {
+    name: 'US amount that starts with 7 is left alone',
+    lines: ['Venmo', 'You paid Alex Kim', '$75.00', 'Nov 14, 2026'],
+    expect: { amount: 75, currency: 'USD' },
+  },
 ];

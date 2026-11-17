@@ -225,3 +225,15 @@ export function prettyDate(s: ISODate): string {
   const d = parseISODate(s);
   return `${WEEKDAY_SHORT[d.getDay()]} ${d.getDate()} ${MONTH_SHORT[d.getMonth()]}`;
 }
+
+/**
+ * Joining part-way through a pay cycle without saying what's left: assume the flexible money is
+ * spread evenly over the cycle, so only the remaining days' share is still available from today.
+ */
+export function withJoinStart(p: Profile, today: ISODate = todayISO()): Profile {
+  if (p.start) return p;
+  const cycle = cycleFor(today, p.payday || 1);
+  if (today <= cycle.start) return p;
+  const left = daysBetweenInclusive(today, cycle.end);
+  return { ...p, start: { date: today, flexibleLeft: Math.round((planTotals(p).flexible * left) / cycle.days) } };
+}

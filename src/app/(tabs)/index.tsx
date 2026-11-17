@@ -191,7 +191,7 @@ export default function Today() {
             </T>
             <ThinBar value={cycle.fraction} />
             <T v="caption" color={C.inkMuted}>
-              {`Day ${cycle.dayIndex} of ${plan.cycle.days} · ${Math.round(cycle.fraction * 100)}% spent`}
+              {`Day ${cycle.dayIndex} of ${plan.cycle.days} · ${Math.max(0, Math.round(cycle.fraction * 100))}% spent`}
             </T>
           </Card>
           <Card style={{ flex: 2, padding: 14 }}>

@@ -5,6 +5,7 @@
 import { useSyncExternalStore } from 'react';
 import Storage from 'expo-sqlite/kv-store';
 
+import { withJoinStart } from '@/domain/budget';
 import type { Entry, PendingImport, Profile } from '@/domain/types';
 
 export interface AppState {
@@ -96,7 +97,7 @@ export const actions = {
     set((s) => ({ profile: { ...s.profile, ...patch } }));
   },
   completeOnboarding() {
-    set({ onboarded: true });
+    set((s) => ({ onboarded: true, profile: withJoinStart(s.profile) }));
   },
   addEntry(e: Omit<Entry, 'id' | 'createdAt'> & { id?: string }): Entry {
     const entry: Entry = { ...e, id: e.id ?? newId('e'), createdAt: new Date().toISOString() } as Entry;

@@ -2,7 +2,7 @@ import { type Href, router } from 'expo-router';
 import { Pressable, View } from 'react-native';
 
 import { Button, Icon, T } from '@/components/ui';
-import { dayPlan, planTotals } from '@/domain/budget';
+import { dayPlan, withJoinStart, planTotals } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import { useDraft } from '@/features/onboarding/draft';
 import { ObScaffold } from '@/features/onboarding/kit';
@@ -22,7 +22,7 @@ export default function Summary() {
   const draft = useDraft();
   const cur = profile.currency;
   const t = planTotals(profile);
-  const plan = dayPlan(profile, entries);
+  const plan = dayPlan(withJoinStart(profile), entries);
   const first = profile.name.trim().split(/\s+/)[0];
 
   const rent = profile.bills.filter((b) => b.name === 'Rent');

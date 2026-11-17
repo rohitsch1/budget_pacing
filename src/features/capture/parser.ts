@@ -164,6 +164,20 @@ const PREFIX_RE = new RegExp(`(₹|\\brs\\b|\\binr\\b|us\\$|\\$|\\busd\\b|€|\\
 const SUFFIX_RE = new RegExp(`(?<![\\d.,])${NUM}\\s?(₹|\\binr\\b|\\busd\\b|\\beur\\b|€|\\bgbp\\b|\\baed\\b|\\brs\\b)`, 'gi');
 const BARE_NUMBER_LINE = /^[+\-−]?\s*(\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d{1,7}(?:\.\d{1,2})?)\s*(?:\/-)?$/;
 
+/**
+ * On-device OCR often misses the rupee sign: it drops it ("1,200"), turns it into a stray glyph
+ * ("%380", "Z380") or reads it as a 7 ("7380" for ₹380). Payment apps always group amounts of
+ * 1,000+ with commas, so an ungrouped "7" + 1–3 digits on its own line is a misread ₹ amount.
+ * Returns the corrected number string, or null.
+ */
+function rupeeMisread(line: string): string | null {
+  const glyph = line.match(/^[%*ZzRF₹]\s?(\d{1,3}(?:,\d{2,3})*(?:\.\d{1,2})?)$/);
+  if (glyph) return glyph[1];
+  const seven = line.match(/^7(\d{1,3})(\.\d{1,2})?$/);
+  if (seven && Number(seven[1]) > 0) return seven[1] + (seven[2] ?? '');
+  return null;
+}
+
 const STATUS_RE = /\b(paid|sent|received|debited|credited|successful|success|completed|transferred|refund(?:ed)?|you paid|payment|money)\b/i;
 const NOISE_LINE_RE = /\b(balance|bal\b|available|avl|limit|cashback|reward|points|coins|scratch|offer|fee|charges|emi|min(?:imum)? due)\b/i;
 const ID_LINE_RE = /\b(ref|utr|txn|transaction|order|upi id|id\b|a\/c|acct|account|mobile|phone|card\s*(?:no|number)|vpa)\b/i;
@@ -182,7 +196,7 @@ function isYearLike(v: number, raw: string): boolean {
 // ---------------------------------------------------------------------------
 // Amount
 // ---------------------------------------------------------------------------
-function findAmount(lines: string[], statusLines: Set<number>): Candidate | null {
+function findAmount(lines: string[], statusLines: Set<number>, rupeeContext = false): Candidate | null {
   const cands: Candidate[] = [];
   const near = (i: number) => statusLines.has(i - 1) || statusLines.has(i + 1) || statusLines.has(i - 2) || statusLines.has(i + 2);
 
@@ -208,6 +222,13 @@ function findAmount(lines: string[], statusLines: Set<number>): Candidate | null
     for (const m of line.matchAll(SUFFIX_RE)) {
       tagged = true;
       add(m[1], currencyOf(m[2]), 4);
+    }
+    if (!tagged && rupeeContext) {
+      const fixed = rupeeMisread(line);
+      if (fixed) {
+        tagged = true;
+        add(fixed, 'INR', 3.5);
+      }
     }
     if (!tagged) {
       const bm = line.match(BARE_NUMBER_LINE);
@@ -592,6 +613,12 @@ function findNote(lines: string[]): string | null {
     const m = l.match(/[“"‘']([^”"’']{2,50})[”"’']/);
     if (m) return m[1].trim();
   }
+  // Notes people type ("dinner split") are usually short, all-lowercase lines with no digits.
+  for (const l of lines) {
+    if (/^[a-z][a-z ]{1,38}[a-z]$/.test(l) && l.split(' ').length <= 5 && !STATUS_RE.test(l) && !FAILED_RE.test(l) && !PENDING_RE.test(l) && !/\b(?:upi|pay|bank|share|done|via)\b/.test(l)) {
+      return l;
+    }
+  }
   return null;
 }
 
@@ -629,8 +656,10 @@ export function parseReceipt(rawLines: string[], opts: ParseOptions = {}): Parse
     if (STATUS_RE.test(l) && !NOISE_LINE_RE.test(l)) statusLines.add(i);
   });
 
-  const amt = findAmount(lines, statusLines);
   const region = appDef?.region ?? bankDef?.region ?? null;
+  const rupeeContext =
+    region === 'IN' || /₹|\brs\b|\binr\b|\bupi\b/i.test(text) || (region === null && opts.homeCurrency === 'INR');
+  const amt = findAmount(lines, statusLines, rupeeContext);
   let currency: CurrencyCode =
     amt?.currency ??
     (region === 'US' ? 'USD' : region === 'IN' ? 'INR' : null) ??
