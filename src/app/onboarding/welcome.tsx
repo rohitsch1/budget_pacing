@@ -38,7 +38,7 @@ export default function Welcome() {
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
         <PaceMark size={32} />
         <T color={C.onDark} style={{ fontFamily: F.displayBold, fontSize: 24, letterSpacing: -0.5 }}>
-          pace
+          Pace
         </T>
       </View>
 
