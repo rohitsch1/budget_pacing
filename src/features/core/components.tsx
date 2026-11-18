@@ -8,9 +8,9 @@ import { WEEKDAY_SHORT, parseISODate, type ISODate } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import type { Entry } from '@/domain/types';
 import { useStore } from '@/store';
-import { C, F, R } from '@/theme/tokens';
+import { C, catStyle, F, R } from '@/theme/tokens';
 
-import { catStyle, entryMeta, entryTitle, isMoneyIn } from './helpers';
+import { entryMeta, entryTitle, isMoneyIn } from './helpers';
 
 export function CatBadge({ category, size = 38 }: { category: string; size?: number }) {
   const c = catStyle(category);
@@ -26,12 +26,18 @@ export function CatBadge({ category, size = 38 }: { category: string; size?: num
 /** One spend / refund row. Tapping opens the entry detail. */
 export function EntryRow({ entry, withCategory = true, last = false, compact = false }: { entry: Entry; withCategory?: boolean; last?: boolean; compact?: boolean }) {
   const inMoney = isMoneyIn(entry);
-  const badgeCat = inMoney && entry.kind !== 'refund' ? 'Groceries' : entry.category;
+  const badgeCat = inMoney ? 'Income' : entry.category;
   const amount = fmt(entry.amount, entry.currency);
+  const refunded = useStore((s) => (entry.kind === 'refund' && entry.refundOf ? s.entries.find((e) => e.id === entry.refundOf) : undefined));
+  // the "not in daily limit" marker is drawn separately below
+  const meta = entryMeta(entry, withCategory)
+    .replace(/(\s·\s)?not in daily (budget|limit)/i, '')
+    .replace(/^\s·\s/, '');
+  const refundText = refunded ? `refund of ${fmt(refunded.amount, refunded.currency)} ${refunded.payee || refunded.note || refunded.category}` : '';
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${entryTitle(entry)}, ${inMoney ? 'plus' : 'minus'} ${amount}`}
+      accessibilityLabel={`${entryTitle(entry)}, ${inMoney ? 'plus' : 'minus'} ${amount}${entry.countsToBudget ? '' : ', not in daily limit'}${refundText ? `, ${refundText}` : ''}`}
       onPress={() => router.push({ pathname: '/entry/[id]', params: { id: entry.id } })}
       style={({ pressed }) => ({
         flexDirection: 'row',
@@ -48,8 +54,15 @@ export function EntryRow({ entry, withCategory = true, last = false, compact = f
           {entryTitle(entry)}
         </T>
         <T v="caption" color={C.inkMuted} numberOfLines={1}>
-          {entryMeta(entry, withCategory)}
+          {[refundText, meta].filter(Boolean).join(' · ')}
         </T>
+        {entry.countsToBudget ? null : (
+          <View style={{ alignSelf: 'flex-start', marginTop: 2, paddingHorizontal: 6, paddingVertical: 1, borderRadius: R.pill, backgroundColor: C.lineSoft }}>
+            <T v="caption" color={C.inkMuted} style={{ fontSize: 10, lineHeight: 14, fontFamily: F.bodySemi }}>
+              not in daily limit
+            </T>
+          </View>
+        )}
       </View>
       <T v="h3" color={inMoney ? C.ok : C.ink} style={{ fontFamily: F.display, fontSize: compact ? 15 : 16 }}>
         {inMoney ? '+' : '−'}
@@ -105,15 +118,22 @@ export function ListCard({ children, style }: { children: ReactNode; style?: Vie
   );
 }
 
-/** Amber "N shared screenshots waiting for your OK" banner → Confirm. Renders nothing when empty. */
+/**
+ * Amber "N shared receipts waiting for your OK" banner. Opens the oldest one; Confirm reads it again and
+ * routes it like a fresh share (received / duplicate / confirm), or offers to discard it if it's gone.
+ */
 export function PendingBanner() {
   const pending = useStore((s) => s.pending);
   if (!pending.length) return null;
   const n = pending.length;
+  const oldest = pending[pending.length - 1];
+  const allShots = pending.every((x) => !!x.imageUri);
+  const what = allShots ? (n === 1 ? 'screenshot' : 'screenshots') : n === 1 ? 'receipt' : 'receipts';
   return (
     <Pressable
       accessibilityRole="button"
-      onPress={() => router.push({ pathname: '/import/confirm', params: { pendingId: pending[0].id } })}
+      accessibilityLabel={`${n} shared ${what} waiting for your OK. Review`}
+      onPress={() => router.push({ pathname: '/import/confirm', params: { pendingId: oldest.id } })}
       style={({ pressed }) => ({
         backgroundColor: C.amberSoft,
         borderRadius: R.md,
@@ -130,7 +150,7 @@ export function PendingBanner() {
         </T>
       </View>
       <T v="small" color={C.amberInk} style={{ flex: 1, fontFamily: F.bodySemi, fontSize: 14 }}>
-        {n === 1 ? 'Shared screenshot waiting for your OK' : 'Shared screenshots waiting for your OK'}
+        {`Shared ${what} waiting for your OK`}
       </T>
       <Icon name="chevron" size={18} color={C.amberInk} />
     </Pressable>

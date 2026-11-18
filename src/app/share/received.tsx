@@ -7,7 +7,7 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Button, Header, Screen, T } from '@/components/ui';
 import { fmt } from '@/domain/money';
 import type { Entry, EntryKind } from '@/domain/types';
-import { finishSession, impactOf, saveFromSession } from '@/features/capture/pipeline';
+import { finishSession, impactOf, refundCandidates, saveFromSession } from '@/features/capture/pipeline';
 import { getSession } from '@/features/capture/session';
 import { goHome, whenLabel } from '@/features/capture/ui';
 import { useStore } from '@/store';
@@ -45,10 +45,12 @@ export default function ShareReceived() {
   const money = fmt(amount, cur);
   const incoming = p.direction === 'in';
   const kind: EntryKind = pick === 'refund' ? 'refund' : pick === 'income' ? 'income' : 'payback';
-  const { before, after } = impactOf(pick === 'skip' ? null : { kind, amount, at: p.at });
+  // a refund of a planned bill/EMI stays out of the daily limit, like the purchase did
+  const counts = pick === 'refund' && refundOf ? refundOf.countsToBudget : true;
+  const { before, after } = impactOf(pick === 'skip' ? null : { kind, amount, at: p.at, countsToBudget: counts });
   const perDay = after.perWorkDay - before.perWorkDay;
 
-  const recent = entries.filter((e) => e.kind === 'expense').slice(0, 6);
+  const recent = refundCandidates(entries, amount, p.at);
 
   let impact: string;
   let cta: string;
@@ -62,8 +64,10 @@ export default function ShareReceived() {
       break;
     case 'refund':
       impact = refundOf
-        ? `Your ${fmt(refundOf.amount, refundOf.currency)} ${refundOf.payee || refundOf.category} spend shrinks by ${money}. Today becomes ${fmt(after.left, cur)} left.`
-        : `Next, pick the purchase it refunds. That spend shrinks by ${money}.`;
+        ? `Your ${fmt(refundOf.amount, refundOf.currency)} ${refundOf.payee || refundOf.category} spend shrinks by ${money}.${counts ? ` Today becomes ${fmt(after.left, cur)} left.` : ' It was a planned payment, so today stays the same.'}`
+        : recent.length
+          ? `Next, pick the purchase it refunds. That spend shrinks by ${money}.`
+          : `No earlier purchase to link it to, so ${money} goes back into this cycle and today becomes ${fmt(after.left, cur)} left.`;
       cta = refundOf || !recent.length ? `Add ${money} refund` : 'Choose the purchase';
       break;
     case 'income':
@@ -87,6 +91,8 @@ export default function ShareReceived() {
       amount,
       category: pick === 'refund' && refundOf ? refundOf.category : 'Income',
       note: pick === 'refund' && refundOf ? `Refund · ${refundOf.payee || refundOf.note || refundOf.category}` : undefined,
+      refundOf: pick === 'refund' && refundOf ? refundOf.id : undefined,
+      countsToBudget: counts,
     });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     goHome();

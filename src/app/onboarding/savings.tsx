@@ -37,6 +37,8 @@ export default function Savings() {
 
   const essentials = t.bills + t.emis + t.routine;
   const target = essentials * 3;
+  const saved = profile.savedSoFar ?? 0;
+  const toGo = Math.max(0, target - saved);
 
   return (
     <ObScaffold
@@ -99,9 +101,11 @@ export default function Savings() {
         <View style={{ backgroundColor: C.white, borderWidth: 1, borderColor: C.line, borderRadius: 18, padding: 16, gap: 4 }}>
           <T v="bodySemi">A good first goal</T>
           <T v="small" color={C.inkMuted}>
-            {`An emergency fund of ${fmt(target, cur)}, about 3 months of bills, EMIs and routine.${
-              s > 0 ? ` At ${fmt(s, cur)} a month you'd get there in about ${Math.ceil(target / s)} months.` : ''
-            }`}
+            {toGo <= 0
+              ? `An emergency fund of ${fmt(target, cur)}, about 3 months of bills, EMIs and routine. The ${fmt(saved, cur)} you've already saved covers it. Nice.`
+              : `An emergency fund of ${fmt(target, cur)}, about 3 months of bills, EMIs and routine.${
+                  saved > 0 ? ` You already have ${fmt(saved, cur)}, so ${fmt(toGo, cur)} to go.` : ''
+                }${s > 0 ? ` At ${fmt(s, cur)} a month you'd get there in about ${Math.ceil(toGo / s)} ${Math.ceil(toGo / s) === 1 ? 'month' : 'months'}.` : ''}`}
           </T>
         </View>
       ) : null}

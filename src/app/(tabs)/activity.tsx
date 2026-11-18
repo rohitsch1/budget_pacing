@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
-import { Pressable, SectionList, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, SectionList, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { Icon, Pill, T } from '@/components/ui';
-import { dayPlan, entryDate, parseISODate, prettyDate, todayISO, addDays, WEEKDAY_SHORT, type ISODate } from '@/domain/budget';
+import { Chip, Icon, Pill, T } from '@/components/ui';
+import { addDays, categoriesFor, dayPlan, entryDate, parseISODate, prettyDate, todayISO, WEEKDAY_SHORT, type ISODate } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import type { Entry } from '@/domain/types';
 import { EntryRow, PendingBanner } from '@/features/core/components';
-import { entryTitle } from '@/features/core/helpers';
+import { entryTitle, isMoneyIn, planTotalsEmpty } from '@/features/core/helpers';
 import { useStore } from '@/store';
 import { C, F, R } from '@/theme/tokens';
 
@@ -25,24 +25,50 @@ function matches(e: Entry, q: string): boolean {
   return hay.includes(s);
 }
 
+type Kind = 'all' | 'spent' | 'in' | 'outside';
+const KINDS: { id: Kind; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'spent', label: 'Spent' },
+  { id: 'in', label: 'Money in' },
+  { id: 'outside', label: 'Not in limit' },
+];
+
+function kindMatches(e: Entry, k: Kind): boolean {
+  switch (k) {
+    case 'all':
+      return true;
+    case 'spent':
+      return e.kind === 'expense' && e.countsToBudget;
+    case 'in':
+      return isMoneyIn(e);
+    case 'outside':
+      return !e.countsToBudget;
+  }
+}
+
 export default function Activity() {
   const insets = useSafeAreaInsets();
   const profile = useStore((s) => s.profile);
   const entries = useStore((s) => s.entries);
   const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<Kind>('all');
+  const [cat, setCat] = useState<string | null>(null);
+  const categories = useMemo(() => categoriesFor(profile), [profile]);
+  const filtered = query.trim() !== '' || kind !== 'all' || cat !== null;
 
   const sections = useMemo<Section[]>(() => {
     const today = todayISO();
     const yesterday = addDays(today, -1);
     const byDay = new Map<ISODate, Entry[]>();
     for (const e of entries) {
-      if (!matches(e, query)) continue;
+      if (!matches(e, query) || !kindMatches(e, kind) || (cat && e.category !== cat)) continue;
       const d = entryDate(e);
       const list = byDay.get(d);
       if (list) list.push(e);
       else byDay.set(d, [e]);
     }
-    const hasPlan = profile.incomes.length > 0 || !!profile.start;
+    const hasPlan = !planTotalsEmpty(profile);
+    const startDate = profile.start?.date ?? null;
     return Array.from(byDay.keys())
       .sort((a, b) => (a < b ? 1 : -1))
       .map((d) => {
@@ -51,13 +77,14 @@ export default function Activity() {
         const short = `${WEEKDAY_SHORT[day.getDay()]} ${day.getDate()}`;
         const title = d === today ? `Today · ${short}` : d === yesterday ? `Yesterday · ${short}` : prettyDate(d);
         let result: Section['result'] = null;
-        if (hasPlan && d <= today) {
+        // Only days Pace was actually planning: on/after the 'where you stand' start, never the future.
+        if (hasPlan && d <= today && (!startDate || d >= startDate)) {
           const p = dayPlan(profile, entries, d);
           result = p.left >= 0 ? { label: `${fmt(p.left, profile.currency)} left`, over: false } : { label: `${fmt(-p.left, profile.currency)} over`, over: true };
         }
         return { date: d, title, result, data };
       });
-  }, [entries, profile, query]);
+  }, [entries, profile, query, kind, cat]);
 
   return (
     <View style={{ flex: 1, backgroundColor: C.paper }}>
@@ -89,6 +116,17 @@ export default function Activity() {
                 </Pressable>
               ) : null}
             </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ marginHorizontal: -20 }} contentContainerStyle={{ gap: 8, paddingHorizontal: 20 }}>
+              {KINDS.map((k) => (
+                <Chip key={k.id} label={k.label} selected={kind === k.id} onPress={() => setKind(k.id)} />
+              ))}
+            </ScrollView>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled" style={{ marginHorizontal: -20 }} contentContainerStyle={{ gap: 8, paddingHorizontal: 20 }}>
+              <Chip label="Any category" selected={cat === null} onPress={() => setCat(null)} />
+              {categories.map((c) => (
+                <Chip key={c} label={c} selected={cat === c} onPress={() => setCat(cat === c ? null : c)} />
+              ))}
+            </ScrollView>
             <PendingBanner />
           </View>
         }
@@ -126,9 +164,9 @@ export default function Activity() {
         }}
         ListEmptyComponent={
           <View style={{ paddingVertical: 40, alignItems: 'center', gap: 6 }}>
-            <T v="bodySemi">{query ? 'Nothing matches that search' : 'No spends yet'}</T>
+            <T v="bodySemi">{filtered ? 'Nothing matches' : 'No spends yet'}</T>
             <T v="small" color={C.inkMuted} style={{ textAlign: 'center' }}>
-              {query ? 'Try a merchant name, a note or an amount.' : 'Tap + to add one, or share a payment screenshot to Pace.'}
+              {filtered ? 'Try another search or filter.' : 'Tap + to add one, or share a payment screenshot to Pace.'}
             </T>
           </View>
         }

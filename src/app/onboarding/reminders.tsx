@@ -1,26 +1,13 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
-import { Pressable, View } from 'react-native';
+import { Alert, View } from 'react-native';
 
 import { Button, Icon, T } from '@/components/ui';
 import { requestReminderPermission, scheduleReminders } from '@/features/reminders';
 import { Bubble, ObScaffold, Toggle, useObFlow } from '@/features/onboarding/kit';
+import { TimeChanger, prettyTime as pretty } from '@/features/onboarding/time';
 import { actions, getState, useStore } from '@/store';
-import { C, F } from '@/theme/tokens';
-
-const MORNING = ['07:30', '08:00', '08:30', '09:00', '09:30'];
-const EVENING = ['20:00', '21:00', '21:30', '22:00', '22:30'];
-
-function pretty(hhmm: string): string {
-  const [h, m] = hhmm.split(':').map(Number);
-  const ap = h >= 12 ? 'pm' : 'am';
-  const h12 = h % 12 || 12;
-  return `${h12}:${String(m).padStart(2, '0')} ${ap}`;
-}
-function nextOf(list: string[], cur: string) {
-  const i = list.indexOf(cur);
-  return list[(i + 1) % list.length];
-}
+import { C } from '@/theme/tokens';
 
 export default function Reminders() {
   const r = useStore((s) => s.profile.reminders);
@@ -29,20 +16,35 @@ export default function Reminders() {
   const set = (p: Partial<typeof r>) => actions.updateProfile({ reminders: { ...r, ...p } });
 
   const rows = [
-    { key: 'morning' as const, n: 'Your number each morning', s: `${pretty(r.morningAt)} · “Today you can spend…”`, at: r.morningAt, cycle: () => set({ morningAt: nextOf(MORNING, r.morningAt) }) },
-    { key: 'evening' as const, n: 'End-of-day check-in', s: `${pretty(r.eveningAt)} · “Log today's spends in 5 seconds”`, at: r.eveningAt, cycle: () => set({ eveningAt: nextOf(EVENING, r.eveningAt) }) },
+    { key: 'morning' as const, n: 'Your number each morning', s: `${pretty(r.morningAt)} · “Today you can spend…”`, at: r.morningAt, setAt: (v: string) => set({ morningAt: v }) },
+    { key: 'evening' as const, n: 'End-of-day check-in', s: `${pretty(r.eveningAt)} · “Log today's spends in 5 seconds”`, at: r.eveningAt, setAt: (v: string) => set({ eveningAt: v }) },
   ];
 
   const nothingOn = !r.morning && !r.evening;
+  /** Nothing will be scheduled, so don't show reminders as ON anywhere. */
+  const turnOff = () => actions.updateProfile({ reminders: { ...getState().profile.reminders, morning: false, evening: false } });
+  const notNow = () => {
+    turnOff();
+    router.push('/onboarding/done');
+  };
   const allow = async () => {
     setBusy(true);
+    let denied = false;
     try {
       const ok = nothingOn || (await requestReminderPermission());
       if (ok) await scheduleReminders(getState().profile);
+      else {
+        denied = true;
+        turnOff();
+      }
     } catch {
-      // permission UI failed; carry on, reminders can be enabled from Settings
+      denied = !nothingOn;
+      if (denied) turnOff();
     } finally {
       setBusy(false);
+    }
+    if (denied && flow.isEdit) {
+      Alert.alert('Notifications are off', 'Allow notifications for Pace in your phone settings, then turn reminders on again.');
     }
     flow.go();
   };
@@ -52,7 +54,7 @@ export default function Reminders() {
       footer={
         <>
           <Button label={flow.isEdit ? 'Save' : nothingOn ? 'Continue' : 'Allow notifications'} loading={busy} onPress={nothingOn && !flow.isEdit ? () => router.push('/onboarding/done') : allow} />
-          {!flow.isEdit && !nothingOn ? <Button kind="ghost" small label="Not now" onPress={() => router.push('/onboarding/done')} /> : null}
+          {!flow.isEdit && !nothingOn ? <Button kind="ghost" small label="Not now" onPress={notNow} /> : null}
         </>
       }>
       <Bubble>Your number is only as good as what you log. Most people forget lunch. Want a gentle nudge? Pick what helps; I&apos;ll stay quiet otherwise.</Bubble>
@@ -65,13 +67,7 @@ export default function Reminders() {
               <T v="caption" color={C.inkMuted}>
                 {row.s}
               </T>
-              {r[row.key] ? (
-                <Pressable accessibilityRole="button" accessibilityLabel={`Change time, now ${pretty(row.at)}`} onPress={row.cycle} hitSlop={6} style={{ alignSelf: 'flex-start' }}>
-                  <T v="caption" color={C.link} style={{ fontFamily: F.bodySemi }}>
-                    Change time
-                  </T>
-                </Pressable>
-              ) : null}
+              {r[row.key] ? <TimeChanger value={row.at} onChange={row.setAt} label={row.n} /> : null}
             </View>
             <Toggle label={row.n} on={r[row.key]} onChange={(v) => set({ [row.key]: v })} />
           </View>

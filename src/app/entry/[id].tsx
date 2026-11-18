@@ -1,17 +1,23 @@
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { Alert, KeyboardAvoidingView, Platform, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Platform, Pressable, Switch, TextInput, View } from 'react-native';
 
+import { DateTimeField, formatWhen } from '@/components/DateTimeField';
 import { Button, Card, Chip, Header, Screen, T } from '@/components/ui';
-import { entryDate, prettyDate } from '@/domain/budget';
 import { fmt, SYMBOL } from '@/domain/money';
-import type { Entry } from '@/domain/types';
+import type { Entry, EntryKind } from '@/domain/types';
+import { CategoryPicker } from '@/features/capture/ui';
 import { CatBadge, Row } from '@/features/core/components';
-import { timeOf } from '@/features/core/helpers';
 import { actions, useStore } from '@/store';
-import { C, CATEGORIES, F, R } from '@/theme/tokens';
+import { C, F, R } from '@/theme/tokens';
 
 const KIND_TITLE: Record<Entry['kind'], string> = { expense: 'Expense', refund: 'Refund', payback: 'Paid back', income: 'Money in' };
+const KINDS: { k: EntryKind; l: string }[] = [
+  { k: 'expense', l: 'Expense' },
+  { k: 'refund', l: 'Refund' },
+  { k: 'payback', l: 'Paid back' },
+  { k: 'income', l: 'Income' },
+];
 const SOURCE: Record<Entry['source'], string> = { manual: 'Added by hand', share: 'Shared from another app', screenshot: 'Read from a screenshot' };
 
 export default function EntryDetail() {
@@ -36,12 +42,30 @@ function Editor({ entry }: { entry: Entry }) {
   const [category, setCategory] = useState(entry.category);
   const [payee, setPayee] = useState(entry.payee ?? '');
   const [note, setNote] = useState(entry.note ?? '');
+  const [at, setAt] = useState(entry.at);
+  const [kind, setKind] = useState<EntryKind>(entry.kind);
+  const [method, setMethod] = useState(entry.method ?? '');
+  const [counts, setCounts] = useState(entry.countsToBudget);
+  const refunded = useStore((s) => (entry.refundOf ? s.entries.find((e) => e.id === entry.refundOf) : undefined));
 
   const parsed = Number(amount.replace(/,/g, ''));
   const valid = Number.isFinite(parsed) && parsed > 0;
   const dirty =
-    (valid && parsed !== entry.amount) || category !== entry.category || payee.trim() !== (entry.payee ?? '') || note.trim() !== (entry.note ?? '');
-  const cats: string[] = entry.kind === 'expense' ? [...CATEGORIES] : Array.from(new Set([entry.category, ...CATEGORIES]));
+    (valid && parsed !== entry.amount) ||
+    category !== entry.category ||
+    payee.trim() !== (entry.payee ?? '') ||
+    note.trim() !== (entry.note ?? '') ||
+    at !== entry.at ||
+    kind !== entry.kind ||
+    method.trim() !== (entry.method ?? '') ||
+    counts !== entry.countsToBudget;
+
+  const changeKind = (k: EntryKind) => {
+    setKind(k);
+    // money in shows as Income unless it's a refund of a category; going back to expense needs a real category
+    if (k === 'income' || k === 'payback') setCategory('Income');
+    else if (k === 'expense' && category === 'Income') setCategory('Other');
+  };
 
   const save = () => {
     if (!valid) {
@@ -53,6 +77,13 @@ function Editor({ entry }: { entry: Entry }) {
       category,
       payee: payee.trim() || undefined,
       note: note.trim() || undefined,
+      at,
+      kind,
+      method: method.trim() || undefined,
+      // a typed-in method no longer matches the old tag
+      methodTag: method.trim() === (entry.method ?? '') ? entry.methodTag : undefined,
+      countsToBudget: counts,
+      refundOf: kind === 'refund' ? entry.refundOf : undefined,
     });
     if (router.canGoBack()) router.back();
   };
@@ -94,7 +125,7 @@ function Editor({ entry }: { entry: Entry }) {
             <Button label="Save" onPress={save} disabled={!dirty} style={{ flex: 2 }} />
           </View>
         }>
-        <Header title={KIND_TITLE[entry.kind]} />
+        <Header title={KIND_TITLE[kind]} />
         <View style={{ alignItems: 'center', gap: 10, paddingVertical: 8 }}>
           <CatBadge category={category} size={48} />
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -110,19 +141,40 @@ function Editor({ entry }: { entry: Entry }) {
               style={{ fontFamily: F.display, fontSize: 46, color: C.ink, minWidth: 80, paddingVertical: 0 }}
             />
           </View>
-          <T v="small" color={C.inkMuted}>
-            {`${prettyDate(entryDate(entry))}${timeOf(entry) ? ` · ${timeOf(entry)}` : ''}`}
-          </T>
+          {kind === 'refund' && entry.refundOf ? (
+            <T v="small" color={C.inkMuted}>
+              {refunded
+                ? `Refund of ${fmt(refunded.amount, refunded.currency)} · ${refunded.payee || refunded.note || refunded.category}, ${formatWhen(refunded.at)}`
+                : 'Refund of a purchase that was deleted'}
+            </T>
+          ) : null}
+        </View>
+
+        <T v="label" color={C.inkMuted}>
+          WHEN
+        </T>
+        <DateTimeField value={at} onChange={setAt} />
+
+        <T v="label" color={C.inkMuted}>
+          TYPE
+        </T>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+          {KINDS.map((x) => (
+            <Chip key={x.k} label={x.l} selected={x.k === kind} onPress={() => changeKind(x.k)} />
+          ))}
         </View>
 
         <T v="label" color={C.inkMuted}>
           CATEGORY
         </T>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {cats.map((c) => (
-            <Chip key={c} label={c} selected={c === category} onPress={() => setCategory(c)} />
-          ))}
-        </View>
+        <CategoryPicker value={category} onChange={setCategory} extra={kind === 'expense' ? [] : ['Income']} />
+        {refunded && kind === 'refund' ? (
+          <Pressable accessibilityRole="link" onPress={() => router.push({ pathname: '/entry/[id]', params: { id: refunded.id } })}>
+            <T v="small" color={C.link} style={{ fontFamily: F.bodySemi }}>
+              Open the purchase this refunds
+            </T>
+          </Pressable>
+        ) : null}
 
         <T v="label" color={C.inkMuted}>
           PAID TO
@@ -134,12 +186,36 @@ function Editor({ entry }: { entry: Entry }) {
         </T>
         <TextInput value={note} onChangeText={setNote} placeholder="Add a note" placeholderTextColor={C.inkFaint} style={input} />
 
+        <T v="label" color={C.inkMuted}>
+          {kind === 'expense' ? 'PAID WITH' : 'METHOD'}
+        </T>
+        <TextInput
+          value={method}
+          onChangeText={setMethod}
+          placeholder="UPI, Card, Cash…"
+          placeholderTextColor={C.inkFaint}
+          accessibilityLabel="Payment method"
+          style={input}
+        />
+
         <Card style={{ paddingVertical: 4, gap: 0, borderRadius: R.lg }}>
-          {entry.method ? <Row label="Paid with" value={entry.methodTag ? `${entry.method} · ${entry.methodTag}` : entry.method} /> : null}
+          <Row
+            label="Counts toward daily limit"
+            sub={counts ? undefined : kind === 'expense' ? 'Already in your plan (bill/EMI)' : 'Kept out of your daily limit'}
+            right={
+              <Switch
+                accessibilityLabel="Counts toward daily limit"
+                value={counts}
+                onValueChange={setCounts}
+                trackColor={{ true: C.harbor, false: C.chipLine }}
+                thumbColor={C.white}
+              />
+            }
+          />
+          {entry.methodTag && method.trim() === (entry.method ?? '') ? <Row label="Account type" value={entry.methodTag} /> : null}
           {entry.app ? <Row label="App" value={entry.app} /> : null}
           {entry.ref ? <Row label="Reference" value={entry.ref} /> : null}
-          <Row label="Source" value={SOURCE[entry.source]} />
-          <Row label="Counts toward daily limit" value={entry.countsToBudget ? 'Yes' : 'No'} last />
+          <Row label="Source" value={SOURCE[entry.source]} last />
         </Card>
       </Screen>
     </KeyboardAvoidingView>

@@ -1,14 +1,13 @@
 import { router } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, View } from 'react-native';
+import { useMemo } from 'react';
+import { Pressable, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { Button, Card, Icon, Pill, Ring, Screen, T } from '@/components/ui';
-import { addDays, dayPlan, isWorkDay, MONTH_SHORT, parseISODate, prettyDate, WEEKDAY_LONG, WEEKDAY_SHORT } from '@/domain/budget';
+import { dayPlan, isWorkDay, MONTH_SHORT, nextPayday, parseISODate, prettyDate, WEEKDAY_LONG, WEEKDAY_SHORT } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import { DateTile, EntryRow, LinkText, PendingBanner } from '@/features/core/components';
-import { billsInCycle, cycleSummary, editRoute, entriesOn, greeting, overPlan, planTotalsEmpty } from '@/features/core/helpers';
-import { scheduleReminders } from '@/features/reminders';
+import { billsInCycle, cycleSummary, editRoute, entriesOn, greeting, lowMoney, overPlan, planTotalsEmpty } from '@/features/core/helpers';
 import { actions, useStore } from '@/store';
 import { C, F, R } from '@/theme/tokens';
 
@@ -22,19 +21,14 @@ export default function Today() {
   const profile = useStore((s) => s.profile);
   const entries = useStore((s) => s.entries);
   const seenShareHowTo = useStore((s) => s.seenShareHowTo);
-  const [overAck, setOverAck] = useState<string | null>(null);
 
   const plan = useMemo(() => dayPlan(profile, entries), [profile, entries]);
   const cycle = cycleSummary(plan);
   const bills = useMemo(() => billsInCycle(profile, plan), [profile, plan]);
   const todays = useMemo(() => entriesOn(entries, plan.date), [entries, plan.date]);
-  const newPlan = useMemo(() => overPlan(profile, entries, plan), [profile, entries, plan]);
+  const newPlan = overPlan(profile, entries, plan);
+  const warn = lowMoney(profile, entries, plan);
   const cur = profile.currency;
-
-  // Keep the morning reminder amount in step with today's numbers (no-op without permission).
-  useEffect(() => {
-    scheduleReminders(profile);
-  }, [profile, plan.limit]);
 
   const now = new Date();
   const d = parseISODate(plan.date);
@@ -48,7 +42,7 @@ export default function Today() {
   const st = STATUS[plan.status];
   const noPlan = planTotalsEmpty(profile);
   const nextBill = bills.upcoming[0];
-  const paydayDate = addDays(plan.cycle.end, 1);
+  const paydayDate = nextPayday(profile, plan.date);
 
   return (
     <Screen scroll>
@@ -127,8 +121,28 @@ export default function Today() {
         </Card>
       ) : null}
 
+      {/* Early warning: money could run short */}
+      {warn ? (
+        <Card style={{ backgroundColor: C.amberSoft, borderColor: C.amberSoft, gap: 6 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <Icon name="info" size={18} color={C.amber} />
+            <T v="bodySemi" color={C.amberInk} style={{ flex: 1 }}>
+              {warn.title}
+            </T>
+          </View>
+          <T v="small" color={C.amberInk} style={{ lineHeight: 20 }}>
+            {`${warn.reason === 'plan' ? 'Trimming a bill, saving or goal would give you more room. ' : ''}${
+              warn.perDay > 0
+                ? `About ${fmt(warn.perDay, cur)} a day is left until payday`
+                : 'Nothing is left for day-to-day spending until payday'
+            } (${warn.daysLeft} ${warn.daysLeft === 1 ? 'day' : 'days'}).${warn.reason === 'plan' ? '' : ' Your bills and savings are still set aside.'}`}
+          </T>
+          <LinkText label="Review your plan" onPress={() => router.push('/plan')} />
+        </Card>
+      ) : null}
+
       {/* Over: the new plan */}
-      {over && newPlan && overAck !== plan.date ? (
+      {over && newPlan && profile.overAckDate !== plan.date ? (
         <Card style={{ gap: 12 }}>
           <T v="bodySemi" style={{ fontSize: 16 }}>
             {"That's fine, here's the new plan"}
@@ -144,19 +158,7 @@ export default function Today() {
               newPlan.lessPerWorkDay > 0 ? `, about ${fmt(newPlan.lessPerWorkDay, cur)} less on an office day` : ''
             }. Your bills and savings are untouched.`}
           </T>
-          <View style={{ flexDirection: 'row', gap: 8 }}>
-            <Button small label="Got it" onPress={() => setOverAck(plan.date)} style={{ flex: 1 }} />
-            <Button
-              small
-              kind="secondary"
-              label="Mark as one-off"
-              style={{ flex: 1 }}
-              onPress={() => {
-                setOverAck(plan.date);
-                Alert.alert('Marked as one-off', "Pace won't treat today as your new normal. The rest of your plan stays the same.");
-              }}
-            />
-          </View>
+          <Button small label="Got it" onPress={() => actions.updateProfile({ overAckDate: plan.date })} />
         </Card>
       ) : null}
 

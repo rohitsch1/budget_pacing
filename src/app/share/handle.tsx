@@ -13,6 +13,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button, Chip, Icon, PaceMark, Pill, T } from '@/components/ui';
 import { fmt } from '@/domain/money';
+import { categoriesFor } from '@/domain/budget';
+import { getState } from '@/store';
 import { finishSession, impactOf, runPipeline, saveFromSession, type PipelineResult } from '@/features/capture/pipeline';
 import { goHome, whenLabel } from '@/features/capture/ui';
 import { C, F } from '@/theme/tokens';
@@ -118,7 +120,7 @@ function QuickSheet({ result }: { result: PipelineResult }) {
   const p = s.parsed;
   const amount = p.amount ?? 0;
   const suggested = p.category ?? 'Food';
-  const cats = [suggested, ...['Food', 'Groceries', 'Shopping', 'Other'].filter((c) => c !== suggested)].slice(0, 4);
+  const cats = [suggested, ...categoriesFor(getState().profile).filter((c) => c !== suggested)].slice(0, 5);
   const [cat, setCat] = useState(suggested);
   const { before, after } = impactOf({ kind: 'expense', amount, at: p.at });
   const limit = Math.max(1, before.limit);

@@ -2,7 +2,9 @@
  * Core-area helpers (Today, Activity, Plan, Insights). Pure functions over the store data.
  */
 import {
+  activeEmis,
   addDays,
+  cycleOf,
   dayPlan,
   daysBetweenInclusive,
   entryDate,
@@ -11,12 +13,14 @@ import {
   MONTH_SHORT,
   nextDue,
   parseISODate,
+  planTotals,
   spendEffect,
+  type Cycle,
   type DayPlan,
   type ISODate,
 } from '@/domain/budget';
 import type { Entry, Profile } from '@/domain/types';
-import { CAT } from '@/theme/tokens';
+import { catStyle as tokenCatStyle } from '@/theme/tokens';
 
 export type OnboardingEditStep =
   | 'pay'
@@ -27,15 +31,17 @@ export type OnboardingEditStep =
   | 'week'
   | 'savings'
   | 'start'
-  | 'reminders';
+  | 'reminders'
+  | 'country';
 
 /** Route object for editing one part of the plan via the onboarding screen in edit mode. */
 export function editRoute(step: OnboardingEditStep) {
   return { pathname: `/onboarding/${step}` as const, params: { edit: '1' } };
 }
 
+/** Colours + initials for any category (built-in, custom or 'Income'). */
 export function catStyle(category: string) {
-  return CAT[category] ?? CAT.Other;
+  return tokenCatStyle(category);
 }
 
 /** Category tints for charts (stronger than list tints). */
@@ -49,6 +55,11 @@ export const CAT_CHART: Record<string, string> = {
   Bills: '#8A5100',
   Other: '#6C7C80',
 };
+
+/** Chart colour for any category; custom categories get their catStyle colour. */
+export function chartColor(category: string): string {
+  return CAT_CHART[category] ?? tokenCatStyle(category).fg;
+}
 
 export function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd'];
@@ -85,7 +96,6 @@ function sourceLabel(e: Entry): string {
 export function entryMeta(e: Entry, withCategory = true): string {
   if (e.kind !== 'expense' && e.countsToBudget) return [timeOf(e), 'Added back to budget'].filter(Boolean).join(' · ');
   const parts = [withCategory ? e.category : '', timeOf(e), sourceLabel(e)];
-  if (!e.countsToBudget) parts.push('not in daily budget');
   return parts.filter(Boolean).join(' · ');
 }
 
@@ -134,7 +144,7 @@ export function billsInCycle(p: Profile, plan: DayPlan) {
     if (d <= plan.cycle.end) all.push({ id: x.id, name: x.name, amount: Number(x.amount) || 0, date: d, kind, monthsLeft: x.monthsLeft });
   };
   p.bills.forEach((b) => add(b, 'bill'));
-  p.emis.forEach((b) => add(b, 'emi'));
+  activeEmis(p, plan.date).forEach((b) => add(b, 'emi'));
   all.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const upcoming = all.filter((x) => x.date >= plan.date);
   const passed = all.filter((x) => x.date < plan.date);
@@ -219,4 +229,66 @@ export function spentByDay(entries: Entry[], from: ISODate, to: ISODate): Map<IS
 /** True when there is no income in the plan yet (nothing to budget from). */
 export function planTotalsEmpty(p: Profile): boolean {
   return !p.incomes.some((x) => Number(x.amount) > 0) && !(p.start && p.start.flexibleLeft > 0);
+}
+
+// ---------- early warning ----------
+export interface LowMoney {
+  reason: 'plan' | 'cycle' | 'pace';
+  title: string;
+  /** average left per day until payday (0 when nothing is left) */
+  perDay: number;
+  daysLeft: number;
+}
+
+/**
+ * Calm early warning when money could run short before payday:
+ * - the plan itself doesn't add up (bills + EMIs + savings + goals exceed income),
+ * - the cycle's flexible money is already used up, or
+ * - an office day's share has fallen below half of what it was at the start of the cycle.
+ */
+export function lowMoney(p: Profile, entries: Entry[], plan: DayPlan): LowMoney | null {
+  if (planTotalsEmpty(p)) return null;
+  const left = plan.flexibleTotal - plan.spentBefore - plan.spentToday;
+  const perDay = plan.daysLeft > 0 ? Math.max(0, Math.round(left / plan.daysLeft)) : 0;
+  const base = { perDay, daysLeft: plan.daysLeft };
+  if (planTotals(p, plan.date).flexible < 0) {
+    return { ...base, reason: 'plan', title: 'Your bills, EMIs, savings and goals add up to more than your income' };
+  }
+  if (left < 0) return { ...base, reason: 'cycle', title: 'This cycle’s spending money has run out' };
+  const startShare = dayPlan(p, [], countFrom(p, plan)).perWorkDay;
+  if (startShare > 0 && plan.perWorkDay < startShare * 0.5) {
+    return { ...base, reason: 'pace', title: 'Money could run short before payday' };
+  }
+  return null;
+}
+
+// ---------- cycles with data ----------
+/** The current cycle plus every earlier cycle that has at least one entry, newest first. */
+export function cyclesWithEntries(p: Profile, entries: Entry[], today: ISODate): Cycle[] {
+  const current = cycleOf(p, today);
+  const out: Cycle[] = [current];
+  let earliest: ISODate | null = null;
+  for (const e of entries) {
+    const d = entryDate(e);
+    if (!earliest || d < earliest) earliest = d;
+  }
+  let c = current;
+  let guard = 0;
+  while (earliest && earliest < c.start && guard++ < 400) {
+    c = cycleOf(p, addDays(c.start, -1));
+    const { start, end } = c;
+    if (entries.some((e) => {
+      const d = entryDate(e);
+      return d >= start && d <= end;
+    })) out.push(c);
+  }
+  return out;
+}
+
+/** "1–30 Nov", "28 Oct – 3 Nov" */
+export function cycleLabel(c: Cycle): string {
+  const a = parseISODate(c.start);
+  const b = parseISODate(c.end);
+  if (a.getMonth() === b.getMonth()) return `${a.getDate()}–${b.getDate()} ${MONTH_SHORT[b.getMonth()]}`;
+  return `${shortDay(c.start)} – ${shortDay(c.end)}`;
 }

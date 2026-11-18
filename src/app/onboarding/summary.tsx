@@ -31,7 +31,7 @@ export default function Summary() {
   const billsAmt = sumAmounts(otherBills);
 
   const rows = [
-    { n: 'Income', s: list(profile.incomes.map((i) => i.name || 'Other'), 'Add what comes in'), a: fmt(t.income, cur), v: 0, c: C.harbor, to: '/onboarding/income' },
+    { n: 'Income', s: t.irregularBuffer > 0 ? `${fmt(t.irregularBuffer, cur)} kept back as a buffer` : list(profile.incomes.map((i) => i.name || 'Other'), 'Add what comes in'), a: fmt(t.income, cur), v: 0, c: C.harbor, to: '/onboarding/income' },
     { n: 'EMIs', s: list(profile.emis.map((e) => `${e.name || 'Loan'} ${fmt(e.amount, cur)}`), 'No loans'), a: fmt(-t.emis, cur), v: t.emis, c: C.inkMuted, to: '/onboarding/emi' },
     ...(rentAmt ? [{ n: 'Rent', s: `Due on the ${rent[0].dueDay}`, a: fmt(-rentAmt, cur), v: rentAmt, c: C.inkFaint, to: '/onboarding/bills' }] : []),
     { n: rentAmt ? 'Bills' : 'Rent & bills', s: list(otherBills.map((b) => b.name), 'None added'), a: fmt(-billsAmt, cur), v: billsAmt, c: '#8FA0A3', to: '/onboarding/bills' },

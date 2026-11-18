@@ -6,8 +6,28 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Button, PaceMark, Ring, T } from '@/components/ui';
 import { fmt } from '@/domain/money';
+import { applyBackup, pickBackup } from '@/features/backup';
 import { useStore } from '@/store';
 import { C, F } from '@/theme/tokens';
+
+async function restore() {
+  try {
+    const b = await pickBackup();
+    if (!b) return;
+    Alert.alert('Restore this backup?', `It has your plan and ${b.entries} ${b.entries === 1 ? 'entry' : 'entries'}.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Restore',
+        onPress: () => {
+          applyBackup(b);
+          router.replace('/');
+        },
+      },
+    ]);
+  } catch (e) {
+    Alert.alert('Could not restore', e instanceof Error ? e.message : 'That file is not a Pace backup.');
+  }
+}
 
 export default function Welcome() {
   const insets = useSafeAreaInsets();
@@ -49,17 +69,7 @@ export default function Welcome() {
 
       <View style={{ gap: 10 }}>
         <Button kind="mint" label="Get started" onPress={() => router.push('/onboarding/how')} />
-        <Button
-          kind="onDark"
-          label="I already have an account"
-          onPress={() =>
-            Alert.alert(
-              'Your data lives on this phone',
-              "Pace doesn't use accounts yet. Everything you enter stays on this device, so start a fresh plan here. It only takes a few minutes.",
-              [{ text: 'Start my plan', onPress: () => router.push('/onboarding/how') }, { text: 'OK', style: 'cancel' }],
-            )
-          }
-        />
+        <Button kind="onDark" label="Restore from a backup" onPress={restore} />
         <T v="caption" color={C.onDarkMuted} style={{ textAlign: 'center', lineHeight: 18 }}>
           We never ask for bank passwords, UPI PINs or card details.
         </T>

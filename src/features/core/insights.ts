@@ -1,9 +1,9 @@
-/** Insight cards + chart data for the Insights tab (current cycle). */
+/** Insight cards + chart data for the Insights tab (one pay cycle at a time). */
 import { addDays, dayPlan, daysBetweenInclusive, entryDate, isWorkDay, parseISODate, spendEffect, type DayPlan, type ISODate } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import type { Entry, Profile } from '@/domain/types';
 
-import { countFrom, plannedDailyLimits, spentByDay } from './helpers';
+import { countFrom, plannedDailyLimits } from './helpers';
 
 export interface Insight {
   id: string;
@@ -19,14 +19,33 @@ export interface WeekBar {
   state: 'past' | 'current' | 'future';
 }
 
-export function buildInsights(p: Profile, entries: Entry[], plan: DayPlan) {
+/**
+ * @param plan  dayPlan for the reference day of the chosen cycle: today for the current cycle,
+ *              the cycle's last day for a past one.
+ * @param today the real today (decides which days are finished).
+ */
+export function buildInsights(p: Profile, entries: Entry[], plan: DayPlan, today: ISODate) {
   const cur = p.currency;
+  const cycle = plan.cycle;
+  const isCurrent = today >= cycle.start && today <= cycle.end;
   const from = countFrom(p, plan);
   const planned = plannedDailyLimits(p, plan);
-  const spent = spentByDay(entries, from, plan.cycle.end);
-  const yesterday = addDays(plan.date, -1);
+  // last fully finished day in this cycle, and the last day shown in charts
+  const lastDone = isCurrent ? addDays(today, -1) : cycle.end;
+  const lastShown = isCurrent ? today : cycle.end;
 
-  // planned vs actual so far (before today)
+  // Per day, the same thing dayPlan compares: that day's spends (counting to the budget) vs that day's limit.
+  const days = new Map<ISODate, { spent: number; limit: number }>();
+  const dayOf = (d: ISODate) => {
+    let x = days.get(d);
+    if (!x) {
+      const dp = dayPlan(p, entries, d);
+      x = { spent: dp.spentToday, limit: dp.limit };
+      days.set(d, x);
+    }
+    return x;
+  };
+
   let plannedSoFar = 0;
   let spentSoFar = 0;
   let daysWithin = 0;
@@ -35,97 +54,141 @@ export function buildInsights(p: Profile, entries: Entry[], plan: DayPlan) {
   let weekendDays = 0;
   let workSpent = 0;
   let workDays = 0;
-  for (let d = from; d <= yesterday; d = addDays(d, 1)) {
-    const s = spent.get(d) ?? 0;
+  for (let d = from; d <= lastDone; d = addDays(d, 1)) {
+    const x = dayOf(d);
     plannedSoFar += planned.get(d) ?? 0;
-    spentSoFar += s;
+    spentSoFar += x.spent;
     daysCounted++;
-    if (s <= dayPlan(p, entries, d).limit) daysWithin++;
+    if (x.spent <= x.limit) daysWithin++;
     if (isWorkDay(p, d)) {
-      workSpent += s;
+      workSpent += x.spent;
       workDays++;
     } else {
-      weekendSpent += s;
+      weekendSpent += x.spent;
       weekendDays++;
     }
   }
+  // current run of finished days within the limit, counting back from the last finished day
+  let streak = 0;
+  for (let d = lastDone; d >= from; d = addDays(d, -1)) {
+    const x = dayOf(d);
+    if (x.spent > x.limit) break;
+    streak++;
+  }
 
-  // week by week
+  // week by week — every bucket gets its own planned amount
   const weeks: WeekBar[] = [];
-  let ws = plan.cycle.start;
-  while (ws <= plan.cycle.end) {
+  let ws = from;
+  while (ws <= cycle.end) {
     let we = addDays(ws, 6);
     // a short remainder (< 7 days) joins the last week, e.g. 22–30
-    if (we >= plan.cycle.end || daysBetweenInclusive(addDays(we, 1), plan.cycle.end) < 7) we = plan.cycle.end;
+    if (we >= cycle.end || daysBetweenInclusive(addDays(we, 1), cycle.end) < 7) we = cycle.end;
     let s = 0;
     let pl = 0;
     for (let d = ws; d <= we; d = addDays(d, 1)) {
-      s += spent.get(d) ?? 0;
+      if (d <= lastShown) s += dayOf(d).spent;
       pl += planned.get(d) ?? 0;
     }
     weeks.push({
       label: `${parseISODate(ws).getDate()}–${parseISODate(we).getDate()}`,
       spent: s,
-      plan: pl,
-      state: we < plan.date ? 'past' : ws > plan.date ? 'future' : 'current',
+      plan: Math.round(pl),
+      state: !isCurrent || we < today ? 'past' : ws > today ? 'future' : 'current',
     });
     ws = addDays(we, 1);
   }
 
-  // categories (expenses that count, net of nothing else)
+  // categories: expenses net of the refunds linked to them; unlinked refunds only lower the net total
+  const inCycle = (e: Entry) => {
+    const d = entryDate(e);
+    return d >= from && d <= cycle.end;
+  };
+  const expenseIds = new Set(entries.filter((e) => e.kind === 'expense').map((e) => e.id));
+  const refundedBy = new Map<string, number>();
+  for (const e of entries) {
+    if (e.kind === 'refund' && e.refundOf && expenseIds.has(e.refundOf)) refundedBy.set(e.refundOf, (refundedBy.get(e.refundOf) ?? 0) + e.amount);
+  }
+  const effective = (e: Entry) => Math.max(0, e.amount - (refundedBy.get(e.id) ?? 0));
+
   const cats = new Map<string, number>();
   let catTotal = 0;
+  let unlinkedRefunds = 0;
+  let outsideLimit = 0;
+  let outsideCount = 0;
   const payees = new Map<string, { n: number; total: number }>();
   for (const e of entries) {
-    const d = entryDate(e);
-    if (d < from || d > plan.cycle.end || e.kind !== 'expense' || !e.countsToBudget) continue;
-    cats.set(e.category, (cats.get(e.category) ?? 0) + e.amount);
-    catTotal += e.amount;
+    if (!inCycle(e)) continue;
+    if (e.kind === 'refund') {
+      if (e.countsToBudget && !(e.refundOf && expenseIds.has(e.refundOf))) unlinkedRefunds += e.amount;
+      continue;
+    }
+    if (e.kind !== 'expense') continue;
+    if (!e.countsToBudget) {
+      outsideLimit += effective(e);
+      outsideCount++;
+      continue;
+    }
+    const amt = effective(e);
+    cats.set(e.category, (cats.get(e.category) ?? 0) + amt);
+    catTotal += amt;
     if (e.payee) {
       const k = e.payee.trim();
       const x = payees.get(k) ?? { n: 0, total: 0 };
-      payees.set(k, { n: x.n + 1, total: x.total + e.amount });
+      payees.set(k, { n: x.n + 1, total: x.total + amt });
     }
   }
   const categories = Array.from(cats.entries())
+    .filter(([, amount]) => amount > 0)
     .map(([name, amount]) => ({ name, amount, pct: catTotal > 0 ? amount / catTotal : 0 }))
     .sort((a, b) => b.amount - a.amount);
+  const netTotal = catTotal - unlinkedRefunds;
 
-  // daily spend vs limit (last up to 14 days of this cycle incl. today)
+  // daily spend vs limit (last up to 14 days shown)
   const daily: { date: ISODate; spent: number; limit: number }[] = [];
-  let start = addDays(plan.date, -13);
+  let start = addDays(lastShown, -13);
   if (start < from) start = from;
-  for (let d = start; d <= plan.date; d = addDays(d, 1)) {
-    daily.push({ date: d, spent: Math.max(0, spent.get(d) ?? 0), limit: dayPlan(p, entries, d).limit });
+  for (let d = start; d <= lastShown; d = addDays(d, 1)) {
+    const x = dayOf(d);
+    daily.push({ date: d, spent: Math.max(0, x.spent), limit: x.limit });
   }
 
   // ---- cards ----
   const cards: Insight[] = [];
-  const hasData = entries.some((e) => {
-    const d = entryDate(e);
-    return d >= from && d <= plan.cycle.end && spendEffect(e) !== 0;
-  });
+  const hasData = entries.some((e) => inCycle(e) && (spendEffect(e) !== 0 || (e.kind === 'expense' && !e.countsToBudget)));
+  const cycleWord = isCurrent ? 'this cycle' : 'that cycle';
 
   if (daysCounted > 0) {
     const diff = Math.round(spentSoFar - plannedSoFar);
-    const startPlan = dayPlan(p, [], from);
-    const before = startPlan.perWorkDay;
+    const before = dayPlan(p, [], from).perWorkDay;
     const now = plan.perWorkDay;
-    if (Math.abs(diff) < 1) {
-      cards.push({ id: 'pace', kicker: 'WORTH KNOWING', title: `You're right on plan, so office days still get ${fmt(now, cur)}.`, body: 'Bills and savings are safe.' });
+    const soFar = `${fmt(spentSoFar, cur)} spent against ${fmt(plannedSoFar, cur)} planned${isCurrent ? ' so far' : ''}.`;
+    if (!isCurrent) {
+      cards.push({
+        id: 'pace',
+        kicker: 'HOW IT WENT',
+        title:
+          Math.abs(diff) < 1
+            ? 'You finished that cycle right on plan.'
+            : diff > 0
+              ? `You finished that cycle ${fmt(diff, cur)} over plan.`
+              : `You finished that cycle ${fmt(-diff, cur)} under plan.`,
+        body: soFar,
+      });
+    } else if (Math.abs(diff) < 1) {
+      cards.push({ id: 'pace', kicker: 'WORTH KNOWING', title: `You're right on plan, so office days get ${fmt(now, cur)}.`, body: 'Bills and savings are safe.' });
     } else if (diff > 0) {
       cards.push({
         id: 'pace',
         kicker: 'WORTH KNOWING',
-        title: `You're ${fmt(diff, cur)} behind plan, so office-day limits dropped from ${fmt(before, cur)} to ${fmt(now, cur)}.`,
-        body: `${fmt(spentSoFar, cur)} spent against ${fmt(plannedSoFar, cur)} planned so far. Bills and savings are still safe.`,
+        title: `You're ${fmt(diff, cur)} behind plan, so office-day limits ${now < before ? `dropped from ${fmt(before, cur)} to ${fmt(now, cur)}` : `are ${fmt(now, cur)}`}.`,
+        body: `${soFar} Bills and savings are still safe.`,
       });
     } else {
       cards.push({
         id: 'pace',
         kicker: 'WORTH KNOWING',
-        title: `You're ${fmt(-diff, cur)} ahead of plan, so office-day limits rose from ${fmt(before, cur)} to ${fmt(now, cur)}.`,
-        body: `${fmt(spentSoFar, cur)} spent against ${fmt(plannedSoFar, cur)} planned so far. Nice pacing.`,
+        title: `You're ${fmt(-diff, cur)} ahead of plan, so office-day limits ${now > before ? `rose from ${fmt(before, cur)} to ${fmt(now, cur)}` : `are ${fmt(now, cur)}`}.`,
+        body: `${soFar} Nice pacing.`,
       });
     }
   }
@@ -134,8 +197,8 @@ export function buildInsights(p: Profile, entries: Entry[], plan: DayPlan) {
     cards.push({
       id: 'category',
       kicker: 'BIGGEST CATEGORY',
-      title: `${top.name} is ${Math.round(top.pct * 100)}% of your spending this cycle.`,
-      body: `${fmt(top.amount, cur)} so far${categories[1] ? `, then ${categories[1].name} at ${fmt(categories[1].amount, cur)}` : ''}.`,
+      title: `${top.name} is ${Math.round(top.pct * 100)}% of your spending ${cycleWord}.`,
+      body: `${fmt(top.amount, cur)}${isCurrent ? ' so far' : ''}${categories[1] ? `, then ${categories[1].name} at ${fmt(categories[1].amount, cur)}` : ''}.`,
     });
   }
   if (weekendDays > 0 && workDays > 0) {
@@ -150,9 +213,15 @@ export function buildInsights(p: Profile, entries: Entry[], plan: DayPlan) {
   }
   if (daysCounted > 0) {
     cards.push({
-      id: 'streak',
+      id: 'within',
       kicker: 'WITHIN THE LIMIT',
-      title: `You stayed within your daily limit on ${daysWithin} of ${daysCounted} ${daysCounted === 1 ? 'day' : 'days'}.`,
+      title: `Within limit on ${daysWithin} of ${daysCounted} ${daysCounted === 1 ? 'day' : 'days'}.`,
+      body:
+        isCurrent && streak > 1
+          ? `The last ${streak} days in a row were all within the limit.`
+          : isCurrent && streak === 1
+            ? 'Yesterday was within the limit.'
+            : undefined,
     });
   }
   const topPayee = Array.from(payees.entries()).sort((a, b) => b[1].n - a[1].n || b[1].total - a[1].total)[0];
@@ -160,10 +229,10 @@ export function buildInsights(p: Profile, entries: Entry[], plan: DayPlan) {
     cards.push({
       id: 'payee',
       kicker: 'MOST VISITED',
-      title: `You paid ${topPayee[0]} ${topPayee[1].n} times this cycle.`,
+      title: `You paid ${topPayee[0]} ${topPayee[1].n} times ${cycleWord}.`,
       body: `${fmt(topPayee[1].total, cur)} in total.`,
     });
   }
 
-  return { cards, weeks, categories, catTotal, daily, hasData };
+  return { cards, weeks, categories, catTotal, netTotal, unlinkedRefunds, outsideLimit, outsideCount, daily, hasData, isCurrent };
 }

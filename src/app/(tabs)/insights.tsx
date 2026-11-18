@@ -1,26 +1,27 @@
-import { router } from 'expo-router';
-import { useMemo } from 'react';
-import { Pressable, View } from 'react-native';
+import { useMemo, useState } from 'react';
+import { ScrollView, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
-import { Card, Icon, Screen, T } from '@/components/ui';
-import { dayPlan, parseISODate } from '@/domain/budget';
+import { Card, Chip, Screen, T } from '@/components/ui';
+import { dayPlan, parseISODate, todayISO } from '@/domain/budget';
 import { fmt } from '@/domain/money';
-import { CAT_CHART } from '@/features/core/helpers';
+import { chartColor, cycleLabel, cyclesWithEntries } from '@/features/core/helpers';
 import { buildInsights, type Insight } from '@/features/core/insights';
 import { useStore } from '@/store';
 import { C, F, R } from '@/theme/tokens';
 
-const FREE_CARDS = 2;
-
 export default function Insights() {
   const profile = useStore((s) => s.profile);
   const entries = useStore((s) => s.entries);
-  const plan = useMemo(() => dayPlan(profile, entries), [profile, entries]);
-  const data = useMemo(() => buildInsights(profile, entries, plan), [profile, entries, plan]);
+  const today = todayISO();
+  const cycles = useMemo(() => cyclesWithEntries(profile, entries, today), [profile, entries, today]);
+  const [pick, setPick] = useState(0);
+  const sel = Math.min(pick, cycles.length - 1);
+  const cycle = cycles[sel];
+  const refDate = sel === 0 ? today : cycle.end;
+  const plan = useMemo(() => dayPlan(profile, entries, refDate), [profile, entries, refDate]);
+  const data = useMemo(() => buildInsights(profile, entries, plan, today), [profile, entries, plan, today]);
   const cur = profile.currency;
-  const visible = profile.plus ? data.cards : data.cards.slice(0, FREE_CARDS);
-  const locked = profile.plus ? 0 : Math.max(0, data.cards.length - FREE_CARDS);
 
   return (
     <Screen scroll>
@@ -28,12 +29,29 @@ export default function Insights() {
         <T v="h1" style={{ fontSize: 26 }}>
           Insights
         </T>
-        <View style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: R.pill, backgroundColor: C.white, borderWidth: 1, borderColor: C.chipLine }}>
-          <T v="small" style={{ fontFamily: F.bodySemi }}>
-            This cycle
-          </T>
-        </View>
+        {cycles.length === 1 ? (
+          <View style={{ paddingVertical: 8, paddingHorizontal: 12, borderRadius: R.pill, backgroundColor: C.white, borderWidth: 1, borderColor: C.chipLine }}>
+            <T v="small" style={{ fontFamily: F.bodySemi }}>
+              {`This cycle · ${cycleLabel(cycle)}`}
+            </T>
+          </View>
+        ) : null}
       </View>
+
+      {cycles.length > 1 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }} style={{ marginHorizontal: -20 }}>
+          <View style={{ width: 12 }} />
+          {cycles.map((c, i) => (
+            <Chip
+              key={c.start}
+              label={i === 0 ? 'This cycle' : cycleLabel(c)}
+              selected={i === sel}
+              onPress={() => setPick(i)}
+            />
+          ))}
+          <View style={{ width: 12 }} />
+        </ScrollView>
+      ) : null}
 
       {!data.hasData ? (
         <Card>
@@ -44,43 +62,15 @@ export default function Insights() {
         </Card>
       ) : (
         <>
-          {visible.map((c, i) => (
-            <InsightCard key={c.id} insight={c} dark={i === 0} index={i} />
+          {data.cards.map((c, i) => (
+            <InsightCard key={`${cycle.start}-${c.id}`} insight={c} dark={i === 0} index={i} />
           ))}
 
-          <WeekChart weeks={data.weeks} cur={cur} />
+          {data.weeks.length > 1 ? <WeekChart weeks={data.weeks} cur={cur} /> : null}
           <DailyChart daily={data.daily} cur={cur} />
-          <CategoryChart categories={data.categories} total={data.catTotal} cur={cur} />
+          <CategoryChart data={data} cur={cur} />
         </>
       )}
-
-      {!profile.plus ? (
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => router.push('/paywall')}
-          style={({ pressed }) => ({
-            backgroundColor: C.white,
-            borderWidth: 1,
-            borderStyle: 'dashed',
-            borderColor: '#B9B5A8',
-            borderRadius: R.lg,
-            paddingVertical: 14,
-            paddingHorizontal: 16,
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 12,
-            opacity: pressed ? 0.7 : 1,
-          })}>
-          <Icon name="lock" size={20} />
-          <T v="small" style={{ flex: 1, fontSize: 14, lineHeight: 20 }}>
-            <T v="small" style={{ fontFamily: F.bodyBold, fontSize: 14 }}>
-              {locked > 0 ? `${locked} more ${locked === 1 ? 'insight' : 'insights'}` : 'More insights'}
-            </T>
-            {' on weekends, streaks and where you shop most with Pace Plus'}
-          </T>
-          <Icon name="chevron" size={18} />
-        </Pressable>
-      ) : null}
     </Screen>
   );
 }
@@ -125,8 +115,7 @@ function Legend({ items }: { items: { label: string; color: string; line?: boole
 function WeekChart({ weeks, cur }: { weeks: ReturnType<typeof buildInsights>['weeks']; cur: Cur }) {
   const H = 100;
   const max = Math.max(1, ...weeks.map((w) => Math.max(w.spent, w.plan)));
-  const fullPlan = weeks.find((w) => w.state !== 'future')?.plan ?? weeks[0]?.plan ?? 0;
-  const label = weeks.map((w) => `${w.label}: ${w.state === 'future' ? 'not started' : `${fmt(w.spent, cur)} of ${fmt(w.plan, cur)} planned`}`).join('; ');
+  const label = weeks.map((w) => `${w.label}: ${w.state === 'future' ? `not started, ${fmt(w.plan, cur)} planned` : `${fmt(w.spent, cur)} of ${fmt(w.plan, cur)} planned`}`).join('; ');
   return (
     <Card style={{ gap: 10 }}>
       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -134,27 +123,31 @@ function WeekChart({ weeks, cur }: { weeks: ReturnType<typeof buildInsights>['we
         <Legend items={[{ label: 'Spent', color: C.harbor }, { label: 'Plan', color: C.link, line: true }]} />
       </View>
       <View accessible accessibilityRole="image" accessibilityLabel={`Spending per week against plan. ${label}`} style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 18, height: H + 20, paddingHorizontal: 6 }}>
-        <View style={{ position: 'absolute', left: 0, right: 0, bottom: (fullPlan / max) * H, borderTopWidth: 2, borderStyle: 'dashed', borderColor: C.link }} />
         {weeks.map((w) => (
           <View key={w.label} style={{ flex: 1, alignItems: 'center', gap: 4 }}>
             <T v="caption" color={w.state === 'future' ? C.inkMuted : C.ink} style={{ fontSize: 11, fontFamily: F.bodySemi }}>
               {w.state === 'future' ? '—' : fmt(w.spent, cur)}
             </T>
-            {w.state === 'future' ? (
-              <View style={{ width: '100%', height: 2, backgroundColor: C.line }} />
-            ) : (
-              <View
-                style={{
-                  width: '100%',
-                  height: Math.max(4, (Math.max(0, w.spent) / max) * H),
-                  borderTopLeftRadius: 8,
-                  borderTopRightRadius: 8,
-                  borderBottomLeftRadius: 4,
-                  borderBottomRightRadius: 4,
-                  backgroundColor: w.state === 'current' ? '#9FB3B7' : C.harbor,
-                }}
-              />
-            )}
+            <View style={{ width: '100%', height: H, justifyContent: 'flex-end' }}>
+              {w.state === 'future' ? (
+                <View style={{ width: '100%', height: 2, backgroundColor: C.line }} />
+              ) : (
+                <View
+                  style={{
+                    width: '100%',
+                    height: Math.max(4, (Math.max(0, w.spent) / max) * H),
+                    borderTopLeftRadius: 8,
+                    borderTopRightRadius: 8,
+                    borderBottomLeftRadius: 4,
+                    borderBottomRightRadius: 4,
+                    backgroundColor: w.state === 'current' ? '#9FB3B7' : C.harbor,
+                  }}
+                />
+              )}
+              {w.plan > 0 ? (
+                <View style={{ position: 'absolute', left: -4, right: -4, bottom: (w.plan / max) * H, borderTopWidth: 2, borderStyle: 'dashed', borderColor: C.link }} />
+              ) : null}
+            </View>
           </View>
         ))}
       </View>
@@ -210,33 +203,56 @@ function DailyChart({ daily, cur }: { daily: ReturnType<typeof buildInsights>['d
   );
 }
 
-function CategoryChart({ categories, total, cur }: { categories: ReturnType<typeof buildInsights>['categories']; total: number; cur: Cur }) {
-  if (!categories.length) return null;
+function CategoryChart({ data, cur }: { data: ReturnType<typeof buildInsights>; cur: Cur }) {
+  const { categories, netTotal, unlinkedRefunds, outsideLimit, outsideCount } = data;
+  if (!categories.length && !outsideLimit) return null;
   return (
     <Card style={{ gap: 10 }}>
-      <T v="bodySemi">{`Where it went · ${fmt(total, cur)}`}</T>
-      <View
-        accessible
-        accessibilityRole="image"
-        accessibilityLabel={`Category split: ${categories.map((c) => `${c.name} ${Math.round(c.pct * 100)}%`).join(', ')}`}
-        style={{ flexDirection: 'row', height: 14, borderRadius: 7, overflow: 'hidden', gap: 2 }}>
-        {categories.map((c) => (
-          <View key={c.name} style={{ flex: Math.max(0.01, c.pct), backgroundColor: CAT_CHART[c.name] ?? CAT_CHART.Other }} />
-        ))}
-      </View>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 6, columnGap: 14 }}>
-        {categories.map((c) => (
-          <View key={c.name} style={{ width: '46%', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: CAT_CHART[c.name] ?? CAT_CHART.Other }} />
-            <T v="small" style={{ flex: 1 }}>
-              {c.name}
+      {categories.length ? (
+        <>
+          <T v="bodySemi">{`Where it went · ${fmt(netTotal, cur)}`}</T>
+          <View
+            accessible
+            accessibilityRole="image"
+            accessibilityLabel={`Category split: ${categories.map((c) => `${c.name} ${Math.round(c.pct * 100)}%`).join(', ')}`}
+            style={{ flexDirection: 'row', height: 14, borderRadius: 7, overflow: 'hidden', gap: 2 }}>
+            {categories.map((c) => (
+              <View key={c.name} style={{ flex: Math.max(0.01, c.pct), backgroundColor: chartColor(c.name) }} />
+            ))}
+          </View>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', rowGap: 6, columnGap: 14 }}>
+            {categories.map((c) => (
+              <View key={c.name} style={{ width: '46%', flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={{ width: 10, height: 10, borderRadius: 3, backgroundColor: chartColor(c.name) }} />
+                <T v="small" style={{ flex: 1 }} numberOfLines={1}>
+                  {c.name}
+                </T>
+                <T v="small" style={{ fontFamily: F.bodyBold }}>
+                  {`${Math.round(c.pct * 100)}%`}
+                </T>
+              </View>
+            ))}
+          </View>
+          <T v="caption" color={C.inkMuted}>
+            {`Refunds are taken off the spend they belong to.${unlinkedRefunds > 0 ? ` ${fmt(unlinkedRefunds, cur)} in other refunds is taken off the total.` : ''}`}
+          </T>
+        </>
+      ) : null}
+      {outsideLimit > 0 ? (
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8, borderTopWidth: categories.length ? 1 : 0, borderTopColor: C.lineSoft, paddingTop: categories.length ? 10 : 0 }}>
+          <View style={{ flex: 1, gap: 2 }}>
+            <T v="small" style={{ fontFamily: F.bodySemi }}>
+              Bills & EMIs paid
             </T>
-            <T v="small" style={{ fontFamily: F.bodyBold }}>
-              {`${Math.round(c.pct * 100)}%`}
+            <T v="caption" color={C.inkMuted}>
+              {`${outsideCount} ${outsideCount === 1 ? 'payment' : 'payments'} outside your daily limit`}
             </T>
           </View>
-        ))}
-      </View>
+          <T v="small" style={{ fontFamily: F.bodyBold }}>
+            {fmt(outsideLimit, cur)}
+          </T>
+        </View>
+      ) : null}
     </Card>
   );
 }

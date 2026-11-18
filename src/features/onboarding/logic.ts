@@ -1,7 +1,7 @@
 /** Pure helpers + typical amounts used by the onboarding screens. */
-import { addDays, cycleFor, isWorkDay, nextDue, planTotals, todayISO, weekdayOf } from '@/domain/budget';
+import { activeEmis, addDays, cycleOf, isWorkDay, MONTH_SHORT, nextDue, nextPayday, parseISODate, planTotals, prettyDate, todayISO, toISODate, weekdayOf } from '@/domain/budget';
 import { SYMBOL, fmt } from '@/domain/money';
-import type { CurrencyCode, Profile, Region, Weekday } from '@/domain/types';
+import type { CurrencyCode, Emi, Profile, Region, Weekday } from '@/domain/types';
 
 export function ordinal(n: number): string {
   const s = ['th', 'st', 'nd', 'rd'];
@@ -88,7 +88,7 @@ export function countDays(p: Profile, from: string, to: string) {
 
 /** Current pay cycle and how its days split. */
 export function cycleInfo(p: Profile, date = todayISO()) {
-  const cycle = cycleFor(date, p.payday || 1);
+  const cycle = cycleOf(p, date);
   return { cycle, ...countDays(p, cycle.start, cycle.end) };
 }
 
@@ -99,8 +99,8 @@ export function defaultUsual(region: Region) {
 
 /** Bills + EMIs still due from today until the end of the cycle. */
 export function stillDueThisCycle(p: Profile, date = todayISO()): number {
-  const { end } = cycleFor(date, p.payday || 1);
-  return [...p.bills, ...p.emis].filter((x) => nextDue(x.dueDay, date) <= end).reduce((a, x) => a + x.amount, 0);
+  const { end } = cycleOf(p, date);
+  return [...p.bills, ...activeEmis(p, date)].filter((x) => nextDue(x.dueDay, date) <= end).reduce((a, x) => a + x.amount, 0);
 }
 
 export const WEEK_ORDER: Weekday[] = [1, 2, 3, 4, 5, 6, 0];
@@ -115,3 +115,36 @@ export function describeWorkDays(days: Weekday[]): string {
 }
 
 export { planTotals };
+
+/** "Monthly", "Every 2 weeks", "Weekly" */
+export function frequencyLabel(p: Profile): string {
+  const f = p.payFrequency ?? 'monthly';
+  return f === 'weekly' ? 'Weekly' : f === 'fortnightly' ? 'Every 2 weeks' : 'Monthly';
+}
+
+/** "Every 2 weeks · next Fri 27 Nov" / "Monthly · on the 1st · next Tue 1 Dec" */
+export function paydaySummary(p: Profile, date = todayISO()): string {
+  const f = p.payFrequency ?? 'monthly';
+  const next = prettyDate(nextPayday(p, date));
+  if (f === 'monthly') return `Monthly · ${onThe(p.payday).toLowerCase()} · next ${next}`;
+  return `${frequencyLabel(p)} · next ${next}`;
+}
+
+/**
+ * ISO date of the last instalment of an EMI with `monthsLeft` instalments still to pay,
+ * counting from the next due date (on its due day).
+ */
+export function emiEndDate(dueDay: number, monthsLeft: number, from = todayISO()): string {
+  const first = parseISODate(nextDue(dueDay, from));
+  const y = first.getFullYear();
+  const m = first.getMonth() + Math.max(1, monthsLeft) - 1;
+  const last = new Date(y, m + 1, 0).getDate();
+  return toISODate(new Date(y, m, Math.min(dueDay, last)));
+}
+
+/** "Ends Feb 2027" for an EMI with an end date. */
+export function emiEndsLabel(e: Emi): string | null {
+  if (!e.endDate) return null;
+  const d = parseISODate(e.endDate);
+  return `Ends ${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`;
+}

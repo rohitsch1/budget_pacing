@@ -1,22 +1,16 @@
 import { router } from 'expo-router';
-import { useEffect } from 'react';
 import { View } from 'react-native';
-import Animated, {
-  FadeInDown,
-  useAnimatedStyle,
-  useReducedMotion,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-} from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { Button, Icon, Pill, T } from '@/components/ui';
-import { SYMBOL, fmt } from '@/domain/money';
+import { fmt } from '@/domain/money';
 import { useDraft } from '@/features/onboarding/draft';
 import { ObScaffold, SkipLink } from '@/features/onboarding/kit';
-import { CURRENCY_WORD, describeWorkDays, onThe, sumAmounts } from '@/features/onboarding/logic';
+import { CURRENCY_WORD, describeWorkDays, frequencyLabel, onThe, sumAmounts } from '@/features/onboarding/logic';
 import { actions, useStore } from '@/store';
 import { C, F } from '@/theme/tokens';
+
+const NEXT = ['Bills and subscriptions', 'Loans and EMIs', 'Routine costs like groceries', 'Your week and what you save'];
 
 const WORK: Record<string, string> = { sal: 'salaried', free: 'freelance', self: 'self-employed', biz: 'business owner', other: '' };
 
@@ -24,18 +18,12 @@ export default function Milestone() {
   const profile = useStore((s) => s.profile);
   const draft = useDraft();
   const first = profile.name.trim().split(/\s+/)[0];
-  const reduce = useReducedMotion();
-  const shim = useSharedValue(0.45);
-  useEffect(() => {
-    if (!reduce) shim.set(withRepeat(withTiming(1, { duration: 800 }), -1, true));
-  }, [reduce, shim]);
-  const shimStyle = useAnimatedStyle(() => ({ opacity: shim.get() }));
 
   const income = sumAmounts(profile.incomes);
   const work = draft.workType ? WORK[draft.workType] : '';
   const facts = [
     `Budgeting in ${CURRENCY_WORD[profile.currency]}, ${profile.country}`,
-    `Payday ${onThe(profile.payday).toLowerCase()}${work ? `, ${work}` : ''}`,
+    `${(profile.payFrequency ?? 'monthly') === 'monthly' ? `Payday ${onThe(profile.payday).toLowerCase()}` : `Paid ${frequencyLabel(profile).toLowerCase()}`}${work ? `, ${work}` : ''}`,
     `Working ${describeWorkDays(profile.workDays)}`,
     `${fmt(income, profile.currency)} coming in each month`,
   ];
@@ -84,19 +72,18 @@ export default function Milestone() {
         ))}
       </View>
 
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 18, borderWidth: 1.5, borderStyle: 'dashed', borderColor: C.harborSoft }}>
-        <Icon name="lock" size={22} color={C.gold} />
-        <View style={{ flex: 1, gap: 2 }}>
-          <T v="caption" color={C.onDarkMuted}>
-            Your daily number
-          </T>
-          <Animated.Text style={[{ fontFamily: F.display, fontSize: 24, letterSpacing: 2, color: '#6C8F96' }, shimStyle]}>
-            {`${SYMBOL[profile.currency].trim()} • • • • / day`}
-          </Animated.Text>
-        </View>
-        <T v="caption" color={C.gold} style={{ fontFamily: F.bodySemi, textAlign: 'right' }}>
-          {'Unlocking\nsoon'}
+      <View style={{ gap: 10, paddingHorizontal: 16, paddingVertical: 14, borderRadius: 18, borderWidth: 1.5, borderStyle: 'dashed', borderColor: C.harborSoft }}>
+        <T v="label" color={C.onDarkMuted} style={{ letterSpacing: 0.6 }}>
+          STILL TO GO, ABOUT 2 MINUTES
         </T>
+        {NEXT.map((n) => (
+          <View key={n} style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+            <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: C.gold }} />
+            <T v="small" color={C.onDark} style={{ flex: 1, fontSize: 14 }}>
+              {n}
+            </T>
+          </View>
+        ))}
       </View>
     </ObScaffold>
   );

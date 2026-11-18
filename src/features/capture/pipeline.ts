@@ -5,13 +5,14 @@
  */
 import { clearSharedPayloads } from 'expo-sharing';
 
-import { dayPlan, todayISO } from '@/domain/budget';
-import type { Entry, EntryKind } from '@/domain/types';
+import { addDays, dayPlan, todayISO } from '@/domain/budget';
+import type { CurrencyCode, Entry, EntryKind } from '@/domain/types';
 import { actions, getState, newId } from '@/store';
 
 import { findDuplicate } from './dedupe';
 import { extractTextFromImage } from './ocr';
 import { parseReceipt, type ParsedReceipt } from './parser';
+import { matchPlanned, suggestPlanned } from './planned';
 import { dropSession, getSession, putSession, type CaptureSession } from './session';
 
 export type CaptureRoute = 'quick' | '/import/confirm' | '/share/duplicate' | '/share/received' | '/share/unread';
@@ -63,7 +64,7 @@ export async function runPipeline(input: PipelineInput, opts: { allowQuick?: boo
   // Keep it safe until the user decides, so nothing is lost if they leave.
   let pendingId = pending?.id ?? null;
   if (!pendingId && (imageUri || text)) {
-    pendingId = actions.addPending({ imageUri, text: text || undefined }).id;
+    pendingId = actions.addPending({ source: input.source, imageUri, text: text || undefined }).id;
   }
 
   const parsed = parseReceipt(lines, { homeCurrency: st.profile.currency, now: new Date() });
@@ -82,7 +83,9 @@ export async function runPipeline(input: PipelineInput, opts: { allowQuick?: boo
     duplicateId: dup?.entry.id ?? null,
     fromShareSheet: !!input.fromShareSheet,
   });
-  return { session, route: decideRoute(parsed, session.duplicateId, !!opts.allowQuick) };
+  // A payment that looks like a planned bill/EMI goes to the full form, where "Already in my plan" is shown.
+  const planned = parsed.amount !== null && parsed.currency === st.profile.currency ? matchPlanned(st.profile, parsed.amount, parsed.payee) : null;
+  return { session, route: decideRoute(parsed, session.duplicateId, !!opts.allowQuick && !planned) };
 }
 
 /** Done with a receipt (added, merged or skipped): forget the pending item and shared cache files. */
@@ -108,6 +111,12 @@ export interface SaveFields {
   note?: string | null;
   at?: string | null;
   method?: string | null;
+  /** stored currency; defaults to the receipt's (use the home currency when the user converted the amount) */
+  currency?: CurrencyCode;
+  /** false = already in the plan (bill/EMI). Default: auto-detected for expenses, true otherwise. */
+  countsToBudget?: boolean;
+  /** for refunds: the expense it refunds */
+  refundOf?: string;
 }
 
 /** Turn a session (+ user edits) into an entry. */
@@ -116,12 +125,17 @@ export function saveFromSession(sid: string | null | undefined, f: SaveFields): 
   const p = s?.parsed;
   const profile = getState().profile;
   const kind = f.kind ?? 'expense';
+  const category = f.category ?? (kind === 'expense' ? (p?.category ?? 'Other') : 'Income');
+  const payee = (f.payee ?? p?.payee) || undefined;
+  const currency = f.currency ?? p?.currency ?? profile.currency;
+  const counts =
+    f.countsToBudget ?? (kind === 'expense' && currency === profile.currency ? !suggestPlanned(profile, Math.abs(f.amount), payee, category) : true);
   const entry = actions.addEntry({
     kind,
     amount: Math.abs(f.amount),
-    currency: p?.currency ?? profile.currency,
-    category: f.category ?? (kind === 'expense' ? (p?.category ?? 'Other') : 'Income'),
-    payee: (f.payee ?? p?.payee) || undefined,
+    currency,
+    category,
+    payee,
     note: (f.note ?? p?.note) || undefined,
     method: (f.method ?? p?.method) || undefined,
     methodTag: p?.methodTag ?? undefined,
@@ -129,7 +143,8 @@ export function saveFromSession(sid: string | null | undefined, f: SaveFields): 
     app: p?.app ?? undefined,
     source: s?.source ?? 'screenshot',
     at: f.at ?? p?.at ?? localNowISO(),
-    countsToBudget: true,
+    countsToBudget: counts,
+    refundOf: kind === 'refund' ? f.refundOf : undefined,
   });
   finishSession(sid);
   return entry;
@@ -154,11 +169,11 @@ export function mergeIntoExisting(sid: string | null | undefined, entryId: strin
 }
 
 /** Today's "left" before/after a hypothetical entry, using the budget engine. */
-export function impactOf(draft: { kind: EntryKind; amount: number; at?: string | null } | null) {
+export function impactOf(draft: { kind: EntryKind; amount: number; at?: string | null; countsToBudget?: boolean } | null) {
   const { profile, entries } = getState();
   const today = todayISO();
   const before = dayPlan(profile, entries, today);
-  if (!draft || !draft.amount) return { before, after: before };
+  if (!draft || !draft.amount || draft.countsToBudget === false) return { before, after: before };
   const fake: Entry = {
     id: 'draft',
     kind: draft.kind,
@@ -172,6 +187,21 @@ export function impactOf(draft: { kind: EntryKind; amount: number; at?: string |
   };
   const after = dayPlan(profile, [fake, ...entries], today);
   return { before, after };
+}
+
+/**
+ * Purchases a refund could belong to: expenses, newest first. Ones at least as large as the refund and
+ * from the last 60 days come first. At most `max`.
+ */
+export function refundCandidates(entries: Entry[], amount: number, at?: string | null, max = 8): Entry[] {
+  const ref = (at ?? localNowISO()).slice(0, 10);
+  const from = addDays(ref, -60);
+  const newestFirst = entries
+    .filter((e) => e.kind === 'expense' && e.at.slice(0, 10) <= ref)
+    .sort((a, b) => (a.at < b.at ? 1 : a.at > b.at ? -1 : a.createdAt < b.createdAt ? 1 : -1));
+  const likely = newestFirst.filter((e) => e.amount + 0.005 >= amount && e.at.slice(0, 10) >= from);
+  const rest = newestFirst.filter((e) => !likely.includes(e));
+  return [...likely, ...rest].slice(0, max);
 }
 
 export { localNowISO };

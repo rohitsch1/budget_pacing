@@ -20,7 +20,7 @@ const PRESETS: { name: string; note: string; inr: number; due: number; on: boole
   { name: 'Electricity', note: 'varies', inr: 1400, due: 18, on: true },
   { name: 'Internet', note: '', inr: 799, due: 20, on: true },
   { name: 'Mobile', note: '', inr: 399, due: 22, on: true },
-  { name: 'Streaming', note: 'could pause', inr: 402, due: 25, on: true },
+  { name: 'Streaming', note: 'subscriptions', inr: 402, due: 25, on: true },
   { name: 'Insurance', note: 'health, life, vehicle', inr: 1200, due: 10, on: false },
   { name: 'Course or school fees', note: 'monthly or yearly', inr: 2500, due: 5, on: false },
 ];
@@ -62,7 +62,6 @@ export default function Bills() {
   };
 
   const total = sumAmounts(rows.filter((r) => r.on));
-  const pausable = rows.filter((r) => r.on && r.note === 'could pause').map((r) => r.name);
 
   return (
     <ObScaffold
@@ -121,11 +120,6 @@ export default function Bills() {
       <View style={{ flexDirection: 'row' }}>
         <AddChip label="Add another bill" onPress={add} />
       </View>
-      {pausable.length ? (
-        <T v="small" color={C.inkMuted}>
-          {`${pausable.join(', ')} is marked “could pause”. If a month gets tight, I'll suggest those first.`}
-        </T>
-      ) : null}
 
       <View style={{ flex: 1 }} />
       <Reply k={String(total > 0)}>

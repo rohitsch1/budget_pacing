@@ -1,14 +1,15 @@
 /** Small building blocks shared by the capture screens (add expense, import, share). */
 import { Image } from 'expo-image';
 import { router } from 'expo-router';
-import { Pressable, View, type ViewStyle } from 'react-native';
+import { useState } from 'react';
+import { Pressable, Switch, TextInput, View, type ViewStyle } from 'react-native';
 import Svg, { Path } from 'react-native-svg';
 
-import { T } from '@/components/ui';
-import { MONTH_SHORT, prettyDate, todayISO, addDays } from '@/domain/budget';
+import { Chip, T } from '@/components/ui';
+import { BUILTIN_CATEGORIES, categoriesFor, MONTH_SHORT, prettyDate, todayISO, addDays } from '@/domain/budget';
 import { fmt, SYMBOL } from '@/domain/money';
 import type { CurrencyCode } from '@/domain/types';
-import { getState } from '@/store';
+import { actions, getState, useStore } from '@/store';
 import { C, F, R } from '@/theme/tokens';
 
 /** "Today, 11:40" · "Yesterday, 20:05" · "Fri 13 Nov, 09:12" */
@@ -91,5 +92,88 @@ export function TextLink({ label, onPress, color = C.link }: { label: string; on
         {label}
       </T>
     </Pressable>
+  );
+}
+
+/**
+ * Category chips from the user's plan (built-ins + their own) with a "+ New" chip that asks for a name
+ * and saves it to profile.customCategories.
+ */
+export function CategoryPicker({ value, onChange, extra = [], small = false }: { value: string; onChange: (c: string) => void; extra?: string[]; small?: boolean }) {
+  const profile = useStore((s) => s.profile);
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const base = categoriesFor(profile);
+  const cats = [...extra.filter((c) => c && !base.includes(c)), ...base];
+  if (value && !cats.includes(value)) cats.unshift(value);
+
+  const commit = () => {
+    const n = name.trim().replace(/\s+/g, ' ').slice(0, 24);
+    setAdding(false);
+    setName('');
+    if (!n) return;
+    const existing = cats.find((c) => c.toLowerCase() === n.toLowerCase());
+    if (existing) {
+      onChange(existing);
+      return;
+    }
+    if (n === 'Income' || (BUILTIN_CATEGORIES as readonly string[]).includes(n)) {
+      onChange(n);
+      return;
+    }
+    // onSubmitEditing and onBlur can both fire for one entry — read fresh state so it's only added once.
+    const now = getState().profile.customCategories ?? [];
+    const dup = now.find((c) => c.toLowerCase() === n.toLowerCase());
+    if (!dup) actions.updateProfile({ customCategories: [...now, n] });
+    onChange(dup ?? n);
+  };
+
+  const h = small ? 34 : 38;
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: small ? 6 : 8 }}>
+      {cats.map((c) => (
+        <Chip key={c} label={c} selected={c === value} onPress={() => onChange(c)} style={small ? { height: h } : undefined} />
+      ))}
+      {adding ? (
+        <TextInput
+          autoFocus
+          value={name}
+          onChangeText={setName}
+          onSubmitEditing={commit}
+          onBlur={commit}
+          placeholder="Category name"
+          placeholderTextColor={C.inkFaint}
+          returnKeyType="done"
+          maxLength={24}
+          accessibilityLabel="New category name"
+          style={{ height: h, minWidth: 140, paddingHorizontal: 14, borderRadius: R.pill, borderWidth: 1, borderColor: C.harbor, backgroundColor: C.white, fontFamily: F.bodySemi, fontSize: 14, color: C.ink }}
+        />
+      ) : (
+        <Chip label="+ New" onPress={() => setAdding(true)} style={{ height: h, borderStyle: 'dashed' }} />
+      )}
+    </View>
+  );
+}
+
+/** "Already in my plan (bill/EMI)" switch: ON means the payment doesn't count toward the daily limit. */
+export function PlannedToggle({ value, onChange, hint }: { value: boolean; onChange: (v: boolean) => void; hint?: string | null }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 14, paddingVertical: 10, borderRadius: 16, backgroundColor: value ? C.amberSoft : C.white, borderWidth: 1, borderColor: value ? C.amberSoft : C.line }}>
+      <View style={{ flex: 1, gap: 2 }}>
+        <T v="bodySemi" style={{ fontSize: 14 }}>
+          Already in my plan (bill/EMI)
+        </T>
+        <T v="caption" color={value ? C.amberInk : C.inkMuted}>
+          {value ? (hint ?? "Won't count toward today's limit") : 'Counts toward your daily limit'}
+        </T>
+      </View>
+      <Switch
+        accessibilityLabel="Already in my plan, bill or EMI"
+        value={value}
+        onValueChange={onChange}
+        trackColor={{ true: C.harbor, false: C.chipLine }}
+        thumbColor={C.white}
+      />
+    </View>
   );
 }

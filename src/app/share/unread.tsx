@@ -1,14 +1,14 @@
 import * as Haptics from 'expo-haptics';
 import { router, useLocalSearchParams } from 'expo-router';
 import { useState } from 'react';
-import { View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 
 import { Button, Header, Keypad, Screen, T } from '@/components/ui';
 import { fmt } from '@/domain/money';
 import { finishSession, impactOf, saveFromSession } from '@/features/capture/pipeline';
 import { getSession } from '@/features/capture/session';
-import { CheckDot, goHome, ImpactPill, TextLink, Thumb, typedAmount } from '@/features/capture/ui';
+import { CategoryPicker, CheckDot, goHome, ImpactPill, TextLink, Thumb, typedAmount } from '@/features/capture/ui';
 import { useStore } from '@/store';
 import { C, F } from '@/theme/tokens';
 
@@ -22,6 +22,7 @@ export default function ShareUnread() {
   const failed = p?.direction === 'failed';
 
   const [amt, setAmt] = useState('');
+  const [category, setCategory] = useState<string>(p?.category ?? 'Other');
   const n = parseFloat(amt || '0') || 0;
   void entries;
   const { after } = impactOf({ kind: 'expense', amount: n, at: p?.at });
@@ -31,7 +32,7 @@ export default function ShareUnread() {
 
   const save = () => {
     if (!n) return;
-    saveFromSession(session?.id, { amount: n });
+    saveFromSession(session?.id, { amount: n, category });
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     goHome();
   };
@@ -102,6 +103,10 @@ export default function ShareUnread() {
         </T>
         <ImpactPill left={after.left} currency={currency} empty={!n} />
       </View>
+
+      <ScrollView style={{ flexShrink: 1 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+        <CategoryPicker value={category} onChange={setCategory} small />
+      </ScrollView>
     </Screen>
   );
 }

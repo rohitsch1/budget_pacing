@@ -5,7 +5,7 @@ import { Button, T } from '@/components/ui';
 import { fmt } from '@/domain/money';
 import type { Recurring } from '@/domain/types';
 import { AddChip, AmountInput, Bubble, ItemEditor, ListCard, ObScaffold, Reply, Toggle, useObFlow } from '@/features/onboarding/kit';
-import { onThe, ordinal, sumAmounts } from '@/features/onboarding/logic';
+import { frequencyLabel, onThe, ordinal, planTotals, sumAmounts } from '@/features/onboarding/logic';
 import { actions, newId, useStore } from '@/store';
 import { C, F } from '@/theme/tokens';
 
@@ -21,6 +21,11 @@ export default function Income() {
   const salary = profile.incomes.find((x) => x.id === SALARY_ID);
   const others = profile.incomes.filter((x) => x.id !== SALARY_ID);
   const total = sumAmounts(profile.incomes);
+  const t = planTotals(profile);
+  const monthly = (profile.payFrequency ?? 'monthly') === 'monthly';
+  const salaryMeta = monthly
+    ? `Per month · on the ${ordinal(Math.min(profile.payday, 31))} · ${profile.irregularIncome ? 'varies' : 'fixed'}`
+    : `Per month · paid ${frequencyLabel(profile).toLowerCase()} · ${profile.irregularIncome ? 'varies' : 'fixed'}`;
 
   const setSalary = (amount: number | null) => {
     const s: Recurring = { id: SALARY_ID, name: 'Salary', amount: amount ?? 0, dueDay: profile.payday };
@@ -44,23 +49,34 @@ export default function Income() {
       footer={
         <>
           <View style={{ backgroundColor: C.harbor, borderRadius: 18, paddingHorizontal: 16, paddingVertical: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
-            <T v="small" color={C.onDarkMuted}>
-              {total > 0 ? `About ${fmt(total, cur)} a month` : 'Your monthly take-home'}
-            </T>
+            <View style={{ flex: 1, gap: 2 }}>
+              <T v="small" color={C.onDarkMuted}>
+                {total > 0 ? (t.irregularBuffer > 0 ? 'Planning on, per month' : `About ${fmt(total, cur)} a month`) : 'Your monthly take-home'}
+              </T>
+              {t.irregularBuffer > 0 ? (
+                <T v="caption" color={C.onDarkMuted}>
+                  {`${fmt(t.irregularBuffer, cur)} kept as a buffer`}
+                </T>
+              ) : null}
+            </View>
             <T color={C.mint} style={{ fontFamily: F.display, fontSize: 24 }}>
-              {fmt(total, cur)}
+              {fmt(t.irregularBuffer > 0 ? t.income : total, cur)}
             </T>
           </View>
           <Button label={flow.label('Continue')} disabled={total <= 0} onPress={flow.go} />
         </>
       }>
-      <Bubble>How much reaches your account each month? Use take-home pay, after tax and deductions, the amount you actually see.</Bubble>
+      <Bubble>
+        {monthly
+          ? 'How much reaches your account each month? Use take-home pay, after tax and deductions, the amount you actually see.'
+          : 'How much reaches your account in a typical month? Add up your paydays for a month, using take-home pay after tax. I’ll split it into your pay cycles.'}
+      </Bubble>
 
       <View style={{ backgroundColor: C.white, borderWidth: 1.5, borderColor: C.harbor, borderRadius: 18, paddingHorizontal: 16, paddingVertical: 14, gap: 8 }}>
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <T v="bodySemi">Salary</T>
           <T v="caption" color={C.inkMuted}>
-            {`Monthly · on the ${ordinal(Math.min(profile.payday, 31))} · ${profile.irregularIncome ? 'varies' : 'fixed'}`}
+            {salaryMeta}
           </T>
         </View>
         <AmountInput size="lg" label="Salary amount" value={salary?.amount || null} onChange={setSalary} currency={cur} />
@@ -75,13 +91,17 @@ export default function Income() {
             My income changes month to month
           </T>
           <T v="caption" color={C.inkMuted}>
-            I&apos;ll plan on a lower, typical month
+            I&apos;ll plan on 85% of it and keep the rest as a buffer
           </T>
         </View>
         <Toggle label="Income changes month to month" on={profile.irregularIncome} onChange={(v) => actions.updateProfile({ irregularIncome: v })} />
       </View>
       {profile.irregularIncome ? (
-        <Reply k="irr">Good call. Enter what comes in during a slower month. Anything above that is a bonus, not a reason to spend more.</Reply>
+        <Reply k={`irr-${t.income}`}>
+          {total > 0
+            ? `Planning on ${fmt(t.income, cur)} a month, ${fmt(t.irregularBuffer, cur)} kept as a buffer for slower months. Anything above that is a bonus, not a reason to spend more.`
+            : 'Good call. I’ll plan on 85% of what you enter, so a slower month doesn’t catch you out.'}
+        </Reply>
       ) : null}
 
       <Bubble delay={300}>Anything else coming in? Tap what applies.</Bubble>
@@ -99,7 +119,7 @@ export default function Income() {
                   dueLabel="Arrives"
                   onName={(v) => patch(x.id, { name: v })}
                   onAmount={(v) => patch(x.id, { amount: v })}
-                  onDueDay={(v) => patch(x.id, { dueDay: v })}
+                  onDueDay={monthly ? (v) => patch(x.id, { dueDay: v }) : undefined}
                   onRemove={() => remove(x.id)}
                   onDone={() => setOpen(null)}
                 />
@@ -110,7 +130,7 @@ export default function Income() {
                       {x.name || 'Other income'}
                     </T>
                     <T v="caption" color={C.inkMuted}>
-                      {`Monthly · ${onThe(x.dueDay).toLowerCase()}`}
+                      {monthly ? `Per month · ${onThe(x.dueDay).toLowerCase()}` : 'Per month'}
                     </T>
                   </View>
                   <T style={{ fontFamily: F.display, fontSize: 17 }}>{fmt(x.amount, cur)}</T>

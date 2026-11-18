@@ -300,7 +300,13 @@ export function withJoinStart(p: Profile, today: ISODate = todayISO()): Profile 
 /** Expense categories: built-in plus the user's own. */
 export const BUILTIN_CATEGORIES = ['Food', 'Transport', 'Groceries', 'Shopping', 'Fun', 'Health', 'Bills', 'Other'] as const;
 export function categoriesFor(p: Profile): string[] {
-  const extra = (p.customCategories ?? []).filter((c) => !(BUILTIN_CATEGORIES as readonly string[]).includes(c));
+  const seen = new Set<string>(BUILTIN_CATEGORIES.map((c) => c.toLowerCase()));
+  const extra = (p.customCategories ?? []).filter((c) => {
+    const k = c.trim().toLowerCase();
+    if (!k || seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   const base = BUILTIN_CATEGORIES.filter((c) => c !== 'Other');
   return [...base, ...extra, 'Other'];
 }

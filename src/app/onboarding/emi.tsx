@@ -2,12 +2,12 @@ import { useState } from 'react';
 import { Pressable, TextInput, View } from 'react-native';
 
 import { Button, Chip, T } from '@/components/ui';
-import { MONTH_SHORT } from '@/domain/budget';
+import { emiMonthsLeft } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import type { Emi } from '@/domain/types';
 import { type CardBalance, updateDraft, useDraft } from '@/features/onboarding/draft';
 import { AddChip, Bubble, ItemEditor, ObScaffold, Reply, Segmented, SkipLink, useObFlow } from '@/features/onboarding/kit';
-import { onThe, sumAmounts } from '@/features/onboarding/logic';
+import { emiEndDate, emiEndsLabel, onThe, sumAmounts } from '@/features/onboarding/logic';
 import { actions, newId, useStore } from '@/store';
 import { C, F } from '@/theme/tokens';
 
@@ -17,12 +17,6 @@ const CARD: { k: CardBalance; l: string }[] = [
   { k: 'sometimes', l: 'Sometimes' },
   { k: 'none', l: 'No card' },
 ];
-
-function endsLabel(monthsLeft: number): string {
-  const d = new Date();
-  d.setMonth(d.getMonth() + monthsLeft);
-  return `Ends ${MONTH_SHORT[d.getMonth()]} ${d.getFullYear()}`;
-}
 
 export default function Emis() {
   const profile = useStore((s) => s.profile);
@@ -35,6 +29,13 @@ export default function Emis() {
 
   const save = (next: Emi[]) => actions.updateProfile({ emis: next });
   const patch = (id: string, p: Partial<Emi>) => save(emis.map((e) => (e.id === id ? { ...e, ...p } : e)));
+  /** Months left → also store the last instalment date so the EMI stops counting once paid off. */
+  const setMonthsLeft = (e: Emi, n: number | null) =>
+    patch(e.id, { monthsLeft: n, endDate: n ? emiEndDate(e.dueDay, n) : null });
+  const setDueDay = (e: Emi, d: number) => {
+    const left = emiMonthsLeft(e);
+    patch(e.id, { dueDay: d, endDate: left ? emiEndDate(d, left) : e.endDate ?? null });
+  };
   const add = (name: string) => {
     const e: Emi = { id: newId('emi'), name: name === 'Other loan' ? '' : name, amount: 0, dueDay: 5, monthsLeft: null };
     save([...emis, e]);
@@ -42,10 +43,11 @@ export default function Emis() {
     setOpen(e.id);
   };
 
-  const total = sumAmounts(emis);
+  const total = sumAmounts(emis.filter((e) => emiMonthsLeft(e) !== 0));
   const ending = emis
-    .filter((e) => e.monthsLeft != null && e.monthsLeft > 0 && e.monthsLeft <= 18 && e.amount > 0)
-    .sort((a, b) => (a.monthsLeft ?? 0) - (b.monthsLeft ?? 0))[0];
+    .map((e) => ({ e, left: emiMonthsLeft(e) }))
+    .filter((x) => x.left != null && x.left > 0 && x.left <= 18 && x.e.amount > 0)
+    .sort((a, b) => (a.left ?? 0) - (b.left ?? 0))[0];
 
   return (
     <ObScaffold
@@ -87,7 +89,7 @@ export default function Emis() {
                   currency={cur}
                   onName={(v) => patch(e.id, { name: v })}
                   onAmount={(v) => patch(e.id, { amount: v })}
-                  onDueDay={(v) => patch(e.id, { dueDay: v })}
+                  onDueDay={(v) => setDueDay(e, v)}
                   onRemove={() => { save(emis.filter((x) => x.id !== e.id)); setOpen(null); }}
                   onDone={() => setOpen(null)}
                   extra={
@@ -97,10 +99,10 @@ export default function Emis() {
                       </T>
                       <TextInput
                         accessibilityLabel="Months left"
-                        value={e.monthsLeft == null ? '' : String(e.monthsLeft)}
+                        value={emiMonthsLeft(e) == null ? '' : String(emiMonthsLeft(e))}
                         onChangeText={(t) => {
                           const n = t.replace(/[^0-9]/g, '');
-                          patch(e.id, { monthsLeft: n ? Math.min(600, Number(n)) : null });
+                          setMonthsLeft(e, n && Number(n) > 0 ? Math.min(600, Number(n)) : null);
                         }}
                         keyboardType="number-pad"
                         placeholder="e.g. 24"
@@ -118,11 +120,11 @@ export default function Emis() {
                   </View>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: 8 }}>
                     <T v="caption" color={C.inkMuted}>
-                      {onThe(e.dueDay) + (e.monthsLeft ? ` · ${e.monthsLeft} months left` : '')}
+                      {onThe(e.dueDay) + (emiMonthsLeft(e) === 0 ? ' · paid off' : emiMonthsLeft(e) ? ` · ${emiMonthsLeft(e)} months left` : '')}
                     </T>
-                    {e.monthsLeft ? (
+                    {emiEndsLabel(e) ? (
                       <T v="caption" color={C.inkMuted}>
-                        {endsLabel(e.monthsLeft)}
+                        {emiEndsLabel(e)}
                       </T>
                     ) : null}
                   </View>
@@ -154,14 +156,14 @@ export default function Emis() {
 
       <View style={{ flex: 1 }} />
       {has === 'yes' && total > 0 ? (
-        <Reply k={`${total}-${ending?.id ?? ''}`}>
+        <Reply k={`${total}-${ending?.e.id ?? ''}`}>
           <T v="small" color={C.onDark} style={{ fontSize: 14, lineHeight: 21 }}>
             {`${fmt(total, cur)} a month in EMIs.`}
             {ending ? (
               <>
-                {` Good news: the ${ending.name.toLowerCase() || 'loan'} ends in ${ending.monthsLeft} months, freeing up `}
+                {` Good news: the ${ending.e.name.toLowerCase() || 'loan'} ends in ${ending.left} ${ending.left === 1 ? 'month' : 'months'}, freeing up `}
                 <T v="small" color={C.mint} style={{ fontFamily: F.bodyBold, fontSize: 14 }}>
-                  {`${fmt(ending.amount, cur)} a month`}
+                  {`${fmt(ending.e.amount, cur)} a month`}
                 </T>
                 .
               </>

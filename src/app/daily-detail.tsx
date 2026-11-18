@@ -3,10 +3,10 @@ import { useMemo } from 'react';
 import { Pressable, View } from 'react-native';
 
 import { Card, Header, Icon, Screen, T } from '@/components/ui';
-import { addDays, dayPlan, isWorkDay, parseISODate, projectedLimits, WEEKDAY_LONG } from '@/domain/budget';
+import { addDays, dayPlan, isWorkDay, parseISODate, planTotals, projectedLimits, WEEKDAY_LONG } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import { Row } from '@/features/core/components';
-import { billsInCycle, countFrom, editRoute, joinDates, ordinal, shortDay } from '@/features/core/helpers';
+import { billsInCycle, countFrom, joinDates, ordinal, shortDay } from '@/features/core/helpers';
 import { useStore } from '@/store';
 import { C, F, R } from '@/theme/tokens';
 
@@ -46,12 +46,21 @@ export default function DailyDetail() {
   const kept: string[] = [];
   if (bills.upcoming.length)
     kept.push(`${fmt(bills.totalUpcoming, cur)} for ${bills.upcoming.length} ${bills.upcoming.length === 1 ? 'bill' : 'bills'} due before payday`);
-  if (profile.savingsMonthly > 0) kept.push(`${fmt(profile.savingsMonthly, cur)} savings`);
-  if (profile.routineMonthly > 0) {
-    const names = profile.routineItems.map((x) => x.name.toLowerCase()).filter(Boolean).slice(0, 4);
-    kept.push(`${fmt(profile.routineMonthly, cur)} routine${names.length ? ` (${names.join(', ')})` : ''}`);
+  const totals = planTotals(profile, plan.date);
+  const monthly = (profile.payFrequency ?? 'monthly') === 'monthly';
+  const perMonth = monthly ? '' : ' a month';
+  if (totals.savings > 0) kept.push(`${fmt(totals.savings, cur)} savings${perMonth}`);
+  if (totals.goals > 0) {
+    const n = (profile.goals ?? []).length;
+    kept.push(`${fmt(totals.goals, cur)}${perMonth} for ${n === 1 ? 'your goal' : `${n} goals`}`);
   }
+  if (totals.routine > 0) {
+    const names = profile.routineItems.map((x) => x.name.toLowerCase()).filter(Boolean).slice(0, 4);
+    kept.push(`${fmt(totals.routine, cur)} routine${perMonth}${names.length ? ` (${names.join(', ')})` : ''}`);
+  }
+  if (totals.irregularBuffer > 0) kept.push(`${fmt(totals.irregularBuffer, cur)}${perMonth} buffer in case income comes in lower`);
   let keptText = kept.join(' · ');
+  if (keptText && !monthly) keptText += `. Monthly amounts are scaled to your ${plan.cycle.days}-day pay cycle`;
   if (bills.passed.length) {
     const names = bills.passed.map((b) => b.name);
     const days = Array.from(new Set(bills.passed.map((b) => ordinal(parseISODate(b.date).getDate()))));
@@ -141,11 +150,11 @@ export default function DailyDetail() {
 
       <Pressable
         accessibilityRole="button"
-        onPress={() => router.push(editRoute('savings'))}
+        onPress={() => router.push('/goals')}
         style={({ pressed }) => ({ backgroundColor: C.harbor, borderRadius: R.lg, paddingVertical: 14, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 12, opacity: pressed ? 0.85 : 1 })}>
         <Icon name="star" size={20} color={C.mint} />
         <T v="small" color={C.onDark} style={{ flex: 1, lineHeight: 19 }}>
-          {"Planning something big? Set money aside in your savings and we'll start saving room for it now."}
+          Planning something big? Add a goal and Pace sets money aside each month.
         </T>
         <Icon name="chevron" size={18} color={C.onDark} />
       </Pressable>

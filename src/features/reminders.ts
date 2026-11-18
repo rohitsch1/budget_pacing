@@ -1,9 +1,9 @@
 /**
- * Local reminders (expo-notifications, SDK 58). OWNER: core agent; onboarding + settings call these.
+ * Local reminders (expo-notifications, SDK 58). Onboarding, Settings and the root layout call these.
  *
- * - Morning "You can spend X today": one WEEKLY trigger per weekday, because the amount differs by
- *   weekday (office / weekend / day extras). The amount is the projected limit for the next occurrence;
- *   Today re-runs scheduleReminders whenever the limit changes so the numbers stay fresh.
+ * - Morning "You can spend X today": one-off DATE triggers for the coming days, each with that day's
+ *   projected limit. src/app/_layout.tsx reschedules (debounced) whenever the plan or entries change
+ *   and when the app returns to the foreground, so the amounts never go stale.
  * - Evening "Log today's spends": a DAILY trigger, or WEEKLY triggers on work days only when quietWeekends is on.
  * All Pace reminders use identifiers prefixed with `pace.` so they can be cancelled before rescheduling.
  */
@@ -11,7 +11,7 @@ import * as Notifications from 'expo-notifications';
 import { AndroidImportance } from 'expo-notifications';
 import { Platform } from 'react-native';
 
-import { addDays, dayPlan, projectedLimits, todayISO, weekdayOf } from '@/domain/budget';
+import { addDays, dayPlan, parseISODate, projectedLimits, todayISO, weekdayOf } from '@/domain/budget';
 import { fmt } from '@/domain/money';
 import type { Profile, Weekday } from '@/domain/types';
 import { getState } from '@/store';
@@ -77,23 +77,70 @@ function parseTime(s: string, fallback: [number, number]): [number, number] {
   return [Math.min(23, Number(m[1])), Math.min(59, Number(m[2]))];
 }
 
-/** Projected limit for the next morning reminder on each weekday (0 = Sunday). */
-function morningAmounts(profile: Profile, hour: number, minute: number): Map<Weekday, number> {
-  const entries = getState().entries;
-  const today = todayISO();
-  const out = new Map<Weekday, number>();
-  const now = new Date();
-  const beforeMorning = now.getHours() < hour || (now.getHours() === hour && now.getMinutes() < minute);
-  if (beforeMorning) out.set(weekdayOf(today), dayPlan(profile, entries, today).limit);
-  for (const d of projectedLimits(profile, entries, addDays(today, 1), 7)) {
-    const wd = weekdayOf(d.date);
-    if (!out.has(wd)) out.set(wd, d.limit);
+/** Whether Pace may post notifications right now (false on web or when denied). */
+export async function remindersAllowed(): Promise<boolean> {
+  if (!supported) return false;
+  try {
+    return (await Notifications.getPermissionsAsync()).granted;
+  } catch {
+    return false;
   }
-  return out;
 }
 
-/** (Re)schedule the morning "today you can spend" + evening "log today's spends" reminders from profile.reminders. */
-export async function scheduleReminders(profile: Profile): Promise<void> {
+const MORNING_DAYS = 7;
+
+/**
+ * Morning reminders for the next 7 days as one-off DATE triggers, each carrying that day's projected
+ * limit. The app reschedules on every plan/entry change and when it comes to the foreground, so the
+ * amounts stay current; one generic reminder per day follows for the week after, in case the app
+ * isn't opened for a while.
+ */
+function morningJobs(profile: Profile, hour: number, minute: number, days: Weekday[]): Promise<string>[] {
+  const entries = getState().entries;
+  const today = todayISO();
+  const now = new Date();
+  const jobs: Promise<string>[] = [];
+  const limits = new Map<string, number>();
+  const plan = dayPlan(profile, entries, today);
+  for (const d of projectedLimits(profile, entries, today, MORNING_DAYS)) limits.set(d.date, d.limit);
+  for (let i = 0; i < MORNING_DAYS * 2; i++) {
+    const date = addDays(today, i);
+    if (!days.includes(weekdayOf(date))) continue;
+    const at = parseISODate(date);
+    at.setHours(hour, minute, 0, 0);
+    if (at.getTime() <= now.getTime() + 30_000) continue;
+    let amount: number | null = null;
+    if (i < MORNING_DAYS) {
+      // Past the end of this cycle the next one starts fresh, so use that day's own plan.
+      amount = limits.get(date) ?? (date > plan.cycle.end ? dayPlan(profile, entries, date).limit : null);
+    }
+    jobs.push(
+      Notifications.scheduleNotificationAsync({
+        identifier: `${PREFIX}morning.${date}`,
+        content: {
+          title: 'Pace',
+          body: amount != null && amount > 0 ? `You can spend ${fmt(amount, profile.currency)} today` : 'See what you can spend today',
+          data: { url: '/' },
+        },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: at, channelId: CHANNEL_ID },
+      }),
+    );
+  }
+  return jobs;
+}
+
+let queue: Promise<void> = Promise.resolve();
+
+/**
+ * (Re)schedule the morning "today you can spend" + evening "log today's spends" reminders from
+ * profile.reminders. Calls are serialised so overlapping reschedules can't leave duplicates.
+ */
+export function scheduleReminders(profile: Profile): Promise<void> {
+  queue = queue.then(() => doSchedule(profile)).catch(() => undefined);
+  return queue;
+}
+
+async function doSchedule(profile: Profile): Promise<void> {
   if (!supported) return;
   try {
     await cancelReminders();
@@ -107,30 +154,7 @@ export async function scheduleReminders(profile: Profile): Promise<void> {
 
     if (r.morning) {
       const [hour, minute] = parseTime(r.morningAt, [8, 30]);
-      const amounts = morningAmounts(profile, hour, minute);
-      for (const wd of days) {
-        const amount = amounts.get(wd);
-        jobs.push(
-          Notifications.scheduleNotificationAsync({
-            identifier: `${PREFIX}morning.${wd}`,
-            content: {
-              title: 'Pace',
-              body:
-                amount != null && amount > 0
-                  ? `You can spend ${fmt(amount, profile.currency)} today`
-                  : 'See what you can spend today',
-              data: { url: '/' },
-            },
-            trigger: {
-              type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
-              channelId: CHANNEL_ID,
-              weekday: wd + 1, // expo: 1 = Sunday
-              hour,
-              minute,
-            },
-          }),
-        );
-      }
+      jobs.push(...morningJobs(profile, hour, minute, days));
     }
 
     if (r.evening) {
