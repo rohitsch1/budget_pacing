@@ -59,3 +59,20 @@ export const F = {
 
 export const R = { sm: 10, md: 16, lg: 20, xl: 28, pill: 999 } as const;
 export const S = { gutter: 20 } as const;
+
+/** Colours + initials for any category, including user-made ones and 'Income'. */
+const EXTRA_CAT = [
+  { bg: '#E7E4F6', fg: '#4B3F99' },
+  { bg: '#DFF0F7', fg: '#13627F' },
+  { bg: '#F7E6DC', fg: '#8A3F12' },
+  { bg: '#E4EEDB', fg: '#3F6420' },
+];
+export function catStyle(name: string): { bg: string; fg: string; i: string } {
+  const known = (CAT as Record<string, { bg: string; fg: string; i: string }>)[name];
+  if (known) return known;
+  if (name === 'Income') return { bg: '#DDF3EC', fg: '#0B6B4F', i: '+₹' };
+  let h = 0;
+  for (const ch of name) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  const c = EXTRA_CAT[h % EXTRA_CAT.length];
+  return { ...c, i: (name.trim().slice(0, 2) || '?').toUpperCase() };
+}

@@ -84,7 +84,8 @@
       "expo-localization",
       "expo-build-properties",
       "./plugins/with-mlkit-ocr",
-      "./plugins/with-release-signing"
+      "./plugins/with-release-signing",
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true,

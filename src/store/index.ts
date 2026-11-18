@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from 'react';
 import Storage from 'expo-sqlite/kv-store';
 
-import { withJoinStart } from '@/domain/budget';
+import { toISODate, withJoinStart } from '@/domain/budget';
 import type { Entry, PendingImport, Profile } from '@/domain/types';
 
 export interface AppState {
@@ -34,8 +34,15 @@ export const DEFAULT_PROFILE: Profile = {
   weekendWeight: 1.6,
   dayExtras: [],
   start: null,
+  payFrequency: 'monthly',
+  payAnchor: null,
+  savedSoFar: 0,
+  debts: [],
+  goals: [],
+  customCategories: [],
+  overAckDate: null,
   reminders: { morning: true, morningAt: '08:30', evening: true, eveningAt: '21:00', quietWeekends: false },
-  plus: false,
+  plus: true, // free during early access
 };
 
 const KEY = 'pace.state.v1';
@@ -44,12 +51,30 @@ function initial(): AppState {
   return { onboarded: false, profile: DEFAULT_PROFILE, entries: [], pending: [], seenShareHowTo: false };
 }
 
+/** Fill defaults and upgrade older saved data. Also used when restoring a backup. */
+export function migrate(parsed: Partial<AppState>): AppState {
+  const profile: Profile = { ...DEFAULT_PROFILE, ...(parsed.profile ?? {}), plus: true };
+  // EMIs saved with a fixed "months left" get a real end date so they stop counting when paid off.
+  profile.emis = (profile.emis ?? []).map((e) => {
+    if (e.endDate || !e.monthsLeft) return e;
+    const d = new Date();
+    d.setMonth(d.getMonth() + e.monthsLeft - 1);
+    return { ...e, endDate: toISODate(d) };
+  });
+  return {
+    ...initial(),
+    ...parsed,
+    profile,
+    entries: Array.isArray(parsed.entries) ? parsed.entries : [],
+    pending: Array.isArray(parsed.pending) ? parsed.pending : [],
+  };
+}
+
 function load(): AppState {
   try {
     const raw = Storage.getItemSync(KEY);
     if (!raw) return initial();
-    const parsed = JSON.parse(raw) as Partial<AppState>;
-    return { ...initial(), ...parsed, profile: { ...DEFAULT_PROFILE, ...(parsed.profile ?? {}) } };
+    return migrate(JSON.parse(raw) as Partial<AppState>);
   } catch {
     return initial();
   }
@@ -75,6 +100,12 @@ function set(next: Partial<AppState> | ((s: AppState) => Partial<AppState>)) {
 
 export function getState(): AppState {
   return state;
+}
+
+/** Subscribe to any state change (outside React). Returns unsubscribe. */
+export function subscribe(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => listeners.delete(fn);
 }
 
 export function useStore<T>(selector: (s: AppState) => T): T {
@@ -121,7 +152,15 @@ export const actions = {
   markShareHowToSeen() {
     set({ seenShareHowTo: true });
   },
-  /** Dev/testing: wipe everything */
+  /** Replace everything with a restored backup (already parsed JSON). Throws if it isn't a Pace backup. */
+  restore(data: unknown) {
+    const d = data as Partial<AppState> & { app?: string };
+    if (!d || typeof d !== 'object' || !d.profile || !Array.isArray(d.entries)) throw new Error('Not a Pace backup file');
+    state = migrate(d);
+    persist();
+    listeners.forEach((l) => l());
+  },
+  /** Wipe everything */
   reset() {
     state = initial();
     persist();

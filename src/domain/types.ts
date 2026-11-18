@@ -13,8 +13,32 @@ export interface Recurring {
 }
 
 export interface Emi extends Recurring {
-  /** optional: months left (null = unknown) */
+  /** optional: months left when last edited (null = unknown). Prefer `endDate`. */
   monthsLeft?: number | null;
+  /** ISO yyyy-mm-dd of the last instalment; after this the EMI stops counting. */
+  endDate?: string | null;
+}
+
+export type PayFrequency = 'monthly' | 'weekly' | 'fortnightly';
+
+/** Money the user owes someone (owe) or is owed (owed). Settling creates an Entry. */
+export interface Debt {
+  id: string;
+  label: string;
+  amount: number;
+  dir: 'owe' | 'owed';
+}
+
+/** A planned purchase / savings goal. Pace sets aside amount/monthsLeft each month until targetDate. */
+export interface Goal {
+  id: string;
+  name: string;
+  amount: number;
+  /** ISO yyyy-mm-dd */
+  targetDate: string;
+  /** already put aside for this goal */
+  saved: number;
+  createdAt: string;
 }
 
 export interface DayExtra {
@@ -30,12 +54,18 @@ export interface Profile {
   region: Region;
   country: string; // display name, e.g. "India"
   currency: CurrencyCode;
-  /** day of month salary arrives; cycle runs payday → day before next payday */
+  /** day of month salary arrives; cycle runs payday → day before next payday (monthly) */
   payday: number;
+  /** how often pay arrives. Weekly/fortnightly cycles start on `payAnchor` and repeat every 7/14 days. Default monthly. */
+  payFrequency?: PayFrequency;
+  /** ISO date of any past/next payday, used for weekly/fortnightly cycles */
+  payAnchor?: string | null;
   /** days the user goes to work (weekday indexes). Non-work days are "weekend" days. */
   workDays: Weekday[];
   incomes: Recurring[]; // salary + others (dueDay = day it arrives)
   irregularIncome: boolean;
+  /** when irregularIncome: plan on this share of the entered income (default 0.85 = a lower, typical month) */
+  irregularFactor?: number;
   bills: Recurring[]; // rent, utilities, subscriptions
   emis: Emi[];
   routineMonthly: number; // groceries, fuel, etc. planned per month
@@ -48,9 +78,17 @@ export interface Profile {
    * Optional "where you stand today" override: money left for flexible spending
    * for the rest of the current cycle, as of `startDate` (ISO yyyy-mm-dd).
    */
-  start?: { date: string; flexibleLeft: number } | null;
+  start?: { date: string; flexibleLeft: number; auto?: boolean } | null;
+  /** savings the user already has (onboarding "where you stand") */
+  savedSoFar?: number;
+  debts?: Debt[];
+  goals?: Goal[];
+  /** user-added expense categories, on top of the built-in ones */
+  customCategories?: string[];
+  /** date (yyyy-mm-dd) the user acknowledged an overspend on Today */
+  overAckDate?: string | null;
   reminders: { morning: boolean; morningAt: string; evening: boolean; eveningAt: string; quietWeekends: boolean };
-  plus: boolean; // Pace Plus (premium) — UI only for now
+  plus: boolean; // Pace Plus — free for everyone during early access (no billing yet)
 }
 
 export type EntryKind = 'expense' | 'refund' | 'payback' | 'income';
@@ -74,11 +112,14 @@ export interface Entry {
   createdAt: string;
   /** false for planned bills/EMIs paid through Pace — they are already outside the flexible budget */
   countsToBudget: boolean;
+  /** for kind 'refund': id of the expense this refund belongs to */
+  refundOf?: string;
 }
 
 /** Pending import waiting for user OK (from share sheet or screenshot) */
 export interface PendingImport {
   id: string;
+  source?: EntrySource;
   imageUri?: string;
   text?: string;
   createdAt: string;

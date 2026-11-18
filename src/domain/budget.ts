@@ -12,7 +12,7 @@
  *   ₹11,950 left over 16 days (5 weekend, 11 weekday), ₹400 reserved for 2 Wednesdays.
  *   ₹11,550 / (5×1.6 + 11) = ₹607.9 → weekday ₹608, weekend ₹973, Wednesday ₹808.
  */
-import type { Entry, Profile, Weekday } from './types';
+import type { Emi, Entry, Goal, Profile, Weekday } from './types';
 
 // ---------- date helpers (local, yyyy-mm-dd) ----------
 export type ISODate = string;
@@ -77,17 +77,73 @@ export function cycleFor(date: ISODate, payday: number): Cycle {
   return { start: s, end: e, days: daysBetweenInclusive(s, e) };
 }
 
+/** Cycle for a profile: monthly from `payday`, or weekly / fortnightly from `payAnchor`. */
+export function cycleOf(p: Profile, date: ISODate = todayISO()): Cycle {
+  const freq = p.payFrequency ?? 'monthly';
+  if (freq === 'monthly' || !p.payAnchor) return cycleFor(date, p.payday || 1);
+  const len = freq === 'weekly' ? 7 : 14;
+  const diff = daysBetweenInclusive(p.payAnchor, date) - 1; // days from anchor to date (may be negative)
+  const k = Math.floor(diff / len);
+  const start = addDays(p.payAnchor, k * len);
+  const end = addDays(start, len - 1);
+  return { start, end, days: len };
+}
+
+/** Next payday after `date` (the day after the current cycle ends). */
+export function nextPayday(p: Profile, date: ISODate = todayISO()): ISODate {
+  return addDays(cycleOf(p, date).end, 1);
+}
+
 // ---------- plan totals ----------
 const sum = (xs: { amount: number }[]) => xs.reduce((a, x) => a + (Number(x.amount) || 0), 0);
 
-export function planTotals(p: Profile) {
-  const income = sum(p.incomes);
+/** EMIs still running on `date` (endDate unset, or on/after date). */
+export function activeEmis(p: Profile, date: ISODate = todayISO()): Emi[] {
+  return p.emis.filter((e) => !e.endDate || e.endDate >= date.slice(0, 7) + '-01');
+}
+
+/** Whole months from `from` to `to` (at least 1). */
+export function monthsUntil(from: ISODate, to: ISODate): number {
+  const a = parseISODate(from);
+  const b = parseISODate(to);
+  const m = (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth()) + (b.getDate() >= a.getDate() ? 1 : 0);
+  return Math.max(1, m);
+}
+
+/** Monthly amount Pace sets aside for a goal so it's ready by its target date. */
+export function goalMonthly(g: Goal, date: ISODate = todayISO()): number {
+  const left = Math.max(0, (Number(g.amount) || 0) - (Number(g.saved) || 0));
+  if (left <= 0) return 0;
+  if (g.targetDate <= date) return left;
+  return Math.ceil(left / monthsUntil(date, g.targetDate));
+}
+
+/** Months between today and an EMI end date, for "N months left" copy. null if unknown. */
+export function emiMonthsLeft(e: Emi, date: ISODate = todayISO()): number | null {
+  if (!e.endDate) return e.monthsLeft ?? null;
+  if (e.endDate < date) return 0;
+  return monthsUntil(date, e.endDate);
+}
+
+/** Monthly totals. Irregular income plans on a lower, typical month (irregularFactor, default 85%). */
+export function planTotals(p: Profile, date: ISODate = todayISO()) {
+  const incomeEntered = sum(p.incomes);
+  const factor = p.irregularIncome ? (p.irregularFactor ?? 0.85) : 1;
+  const income = Math.round(incomeEntered * factor);
   const bills = sum(p.bills);
-  const emis = sum(p.emis);
+  const emis = sum(activeEmis(p, date));
   const routine = p.routineMonthly || 0;
   const savings = p.savingsMonthly || 0;
-  const flexible = income - bills - emis - routine - savings;
-  return { income, bills, emis, routine, savings, flexible };
+  const goals = (p.goals ?? []).reduce((a, g) => a + goalMonthly(g, date), 0);
+  const flexible = income - bills - emis - routine - savings - goals;
+  return { income, incomeEntered, irregularBuffer: incomeEntered - income, bills, emis, routine, savings, goals, flexible };
+}
+
+/** Flexible money for one cycle: the monthly figure, scaled for weekly / fortnightly pay. */
+export function cycleFlexible(p: Profile, cycle: Cycle, date: ISODate = todayISO()): number {
+  const f = planTotals(p, date).flexible;
+  if ((p.payFrequency ?? 'monthly') === 'monthly') return f;
+  return Math.round((f * 12 * cycle.days) / 365);
 }
 
 // ---------- entries ----------
@@ -143,13 +199,16 @@ export function extrasFor(p: Profile, d: ISODate): { amount: number; label: stri
 }
 
 export function dayPlan(p: Profile, entries: Entry[], date: ISODate = todayISO()): DayPlan {
-  const cycle = cycleFor(date, p.payday || 1);
-  const totals = planTotals(p);
+  const cycle = cycleOf(p, date);
+  const full = cycleFlexible(p, cycle, date);
 
-  let base = totals.flexible;
+  let base = full;
   let countFrom = cycle.start;
   if (p.start && p.start.date >= cycle.start && p.start.date <= cycle.end && p.start.date <= date) {
-    base = p.start.flexibleLeft;
+    // auto (joined mid-cycle): the remaining days' share of the *current* plan, so later plan edits still apply.
+    base = p.start.auto
+      ? Math.round((full * daysBetweenInclusive(p.start.date, cycle.end)) / cycle.days)
+      : p.start.flexibleLeft;
     countFrom = p.start.date;
   }
 
@@ -232,8 +291,16 @@ export function prettyDate(s: ISODate): string {
  */
 export function withJoinStart(p: Profile, today: ISODate = todayISO()): Profile {
   if (p.start) return p;
-  const cycle = cycleFor(today, p.payday || 1);
+  const cycle = cycleOf(p, today);
   if (today <= cycle.start) return p;
   const left = daysBetweenInclusive(today, cycle.end);
-  return { ...p, start: { date: today, flexibleLeft: Math.round((planTotals(p).flexible * left) / cycle.days) } };
+  return { ...p, start: { date: today, flexibleLeft: Math.round((cycleFlexible(p, cycle, today) * left) / cycle.days), auto: true } };
+}
+
+/** Expense categories: built-in plus the user's own. */
+export const BUILTIN_CATEGORIES = ['Food', 'Transport', 'Groceries', 'Shopping', 'Fun', 'Health', 'Bills', 'Other'] as const;
+export function categoriesFor(p: Profile): string[] {
+  const extra = (p.customCategories ?? []).filter((c) => !(BUILTIN_CATEGORIES as readonly string[]).includes(c));
+  const base = BUILTIN_CATEGORIES.filter((c) => c !== 'Other');
+  return [...base, ...extra, 'Other'];
 }
